@@ -111,5 +111,5 @@ export interface HomepageBuildResult {
   code: string;
   sessionId: string;
   /** Where the code came from: a session output file, or a fenced block in the final message. */
-  source: "session-output" | "message-fence";
+  source: "session-output" | "local-output" | "message-fence";
 }

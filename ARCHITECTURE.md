@@ -1,6 +1,7 @@
 # Architecture
 
-There is no server. Three parties are involved, and you run one of them.
+There is no application server. The default Anthropic path involves the following
+parties; the OpenAI-compatible path is described below.
 
 | | Runs where | Does what |
 |---|---|---|
@@ -63,9 +64,41 @@ it runs sandboxed, not in the extension's own page.
 
 ## Layout
 
+### OpenAI-compatible provider
+
+The Anthropic managed-session path remains the default. `api-config.ts` validates
+and normalizes a provider configuration, and `api-runner.ts` routes builds to
+either the existing orchestrator or `openai-orchestrator.ts`.
+
+Compatible builds send non-streaming JSON Chat Completions requests to a configured
+API root plus `/chat/completions`, with function schemas for the browser tools and
+local `read`, `grep`, `glob`, `write`. No vendor-specific sampling, output-token or
+reasoning settings are sent. Assistant tool calls are saved before execution;
+each correlated tool result and virtual file change is then checkpointed together.
+On resume, only unanswered calls are executed. A browser scrape interrupted before
+its result was saved may be repeated. Provider `reasoning_content` is preserved
+when returned so compatible reasoning endpoints can continue tool turns.
+
+The virtual filesystem is a plain local data structure with no shell or OS access.
+Reads are capped and paginated; grep is a literal case-insensitive search. Only
+`/mnt/session/outputs/homepage.tsx` may be written. Limits bound the run to 40 model
+turns, 8 distinct scraped URLs, 2 million stored file characters and 2 million
+conversation characters; each HTTP request has a 3-minute timeout. HTTP errors
+report status without copying potentially sensitive gateway response bodies.
+
+Settings persist provider-specific keys/model selections separately, defaulting
+existing installations to Anthropic. BuildManager pins the active configuration
+in local storage so changing Settings cannot route an interrupted conversation to
+a different provider. Its single-flight lock is acquired before asynchronous
+settings reads. The same keepalive, heartbeat, progress protocol and automatic
+rebuild schedule serve both providers.
+
 ```
 packages/agent-core/      host-agnostic agent loop — imports no chrome.*, browser.*, or node:*
   orchestrator.ts         runHomepageBuild: session lifecycle, event loop, tool dispatch, cleanup
+  openai-orchestrator.ts  local tool loop and checkpoints for Chat Completions APIs
+  api-config.ts          provider configuration, URL normalization and validation
+  api-runner.ts          routes a configured build to the appropriate provider
   setup.ts                ensureAgent / ensureEnvironment (created once, cached by ID)
   prompt.ts               system prompt + per-build kickoff message
   schemas.ts              custom tool input schemas and defaults
@@ -94,14 +127,16 @@ harness/                  Bun scripts: drive agent-core with a fixture/fetch bri
 
 | Command | Proves |
 |---|---|
-| `pnpm test` | The history digest is capped, ranked, drops `urls[]`, reports `totalSitesSeen` |
+| `pnpm test` | History digest plus compatible tool calls, output rendering, resume, errors, cancellation and cleanup |
 | `pnpm agent:run` | Full build against the real API: tools, mounting, sandbox grep/read, deliverable, cleanup |
 | `pnpm agent:verify` | The deliverable transforms, evaluates and server-renders |
 | `pnpm agent:resume-test` | A build killed with a tool call pending can be reattached and finished |
 | `pnpm agent:retention <sessionId>` | The session and every uploaded page body are actually deleted |
 | `pnpm extension:test` | In headless Chrome: worker registers, new tab renders, port protocol answers, `chrome.history` reads |
 
-The `agent:*` commands need `ANTHROPIC_API_KEY` in `.env` and spend API credits. The
+`agent:run` can use `ANTHROPIC_API_KEY` or `API_PROVIDER=openai-compatible` with
+`OPENAI_API_KEY`, `OPENAI_BASE_URL` and `OPENAI_MODEL`. The resume/retention scripts
+are Anthropic-specific. Real builds spend API credits. The
 harness's bridge uses fixture history and a plain `fetch`, so it can't see
 logged-in pages — that's the whole reason `getPageHtml` runs in your browser.
 
@@ -137,6 +172,14 @@ arrived in the history fetch.
 **`files.upload()` takes no `purpose`.** Just `{ file }`.
 
 ## Privacy
+
+Both providers receive browsing digests and page excerpts. Compatible builds
+keep the conversation, scraped HTML and active configuration (including the key)
+in `chrome.storage.local` while in flight, including across an unexpected worker
+kill. The conversation/files/configuration are removed on completion, failure or
+explicit cancellation. Compatible APIs have no universal session-deletion endpoint;
+their server-side request retention is governed by the selected provider. Saving
+settings or switching providers preserves each provider's saved credential.
 
 The session event log persists every domain, title and scraped page body server-side
 until deleted, and uploaded files persist independently. `runHomepageBuild` deletes

@@ -16,10 +16,12 @@ terminal, a zine.
 
 > **Privacy, up front.** To build your homepage, the extension sends a summary of
 > your browsing history (top domains, visit counts, a few page titles) and the
-> cleaned-up HTML of up to 8 pages to the Anthropic API, using your own API key.
+> cleaned-up HTML of up to 8 pages to your selected API provider, using your own API key.
 > Those pages are loaded in your signed-in browser, so they can include private
-> content. The agent session and every uploaded page are deleted when each build
-> ends. Your API key stays in the extension's local storage. More detail in
+> content. Anthropic sessions and uploads are deleted when each build ends.
+> OpenAI-compatible builds clear their local conversation and page checkpoint on
+> completion, failure or cancellation; server retention depends on your provider.
+> Your API keys stay in the extension's local storage. More detail in
 > [ARCHITECTURE.md](./ARCHITECTURE.md#privacy).
 
 ---
@@ -27,7 +29,8 @@ terminal, a zine.
 ## Install
 
 You need Chrome (or another Chromium browser), [Node.js](https://nodejs.org) 20+,
-and an [Anthropic API key](https://console.anthropic.com).
+and an [Anthropic API key](https://console.anthropic.com) or an OpenAI-compatible
+API endpoint and key with a model that supports Chat Completions function calling.
 
 ```bash
 git clone https://github.com/ThariqS/ai-newtab.git
@@ -48,7 +51,9 @@ If Chrome asks whether to keep the changed new-tab page, choose **Keep it**.
 
 ## Your first homepage
 
-1. Open a new tab and paste your Anthropic API key.
+1. Open a new tab and choose your API provider. For Anthropic, paste your key.
+   For **OpenAI-compatible**, enter the Base URL, API key and exact model ID.
+   Click **Save connection**.
 2. Click **Build today's homepage**.
 3. Watch it work. The progress view walks through each step: preparing the
    agent, reading your history, opening pages in your browser, analyzing them,
@@ -75,13 +80,32 @@ over the agent's own defaults. This box sets both the content and the look:
 
 Click **Save & rebuild** to apply them right away.
 
-**Model.** Choose which Claude model writes your page:
+**API connection.** Switch providers or update your key in Settings. Each provider's
+key and model selection are saved separately. **Save & rebuild** applies the
+connection and instructions together. Settings are also available before the first
+build, including after a failed build.
+
+For **OpenAI-compatible**, use your provider's API root including its version path
+(for example `https://api.example.com/v1`) or the complete `/chat/completions` URL.
+Enter the exact model ID offered by that provider; there is no fixed model list.
+Local HTTP endpoints such as `http://localhost:1234/v1` work too. For a local API
+without authentication, enter a placeholder key such as `local`.
+
+The endpoint must accept `POST /chat/completions`, JSON responses and `tools`
+function calling with correlated `tool` messages. Responses-only models/endpoints
+are not supported by this adapter. Reading history, scraping pages, analyzing
+files and writing the homepage all run through the same browser tools. Compatible
+builds are bounded to 40 model turns and 8 distinct pages. Individual API requests
+time out after 3 minutes; errors appear in the build view.
+
+**Model (Anthropic).** Choose which Claude model writes your page:
 
 - **Claude Sonnet 5.5** (default): the best balance of quality and cost.
 - **Claude Haiku 5.5**: the fastest and cheapest.
 - **Claude Opus 5.5**: the most careful editor, and the most expensive.
 
-The new model takes effect from your next build.
+Connection changes apply to the next build. An interrupted build resumes with the
+provider, endpoint, model and key it started with.
 
 **Rebuild automatically.** On by default. Once your homepage is older than the
 interval you pick (6, 12, 24 or 48 hours), the extension rebuilds it quietly in the
@@ -92,9 +116,10 @@ failed build until the next interval, so it never loops.
 
 ## Good to know
 
-- **Cost.** Each build is a single agent session billed to your API key. What it
-  costs depends on the model and on how much it reads. Haiku is the cheapest
-  choice, and you can turn off automatic rebuilds to build only when you ask.
+- **Cost.** Builds are billed by your selected provider: a managed session for
+  Anthropic, or multiple Chat Completions requests for compatible APIs. Cost
+  depends on the model and how much it reads. Turn off automatic rebuilds to
+  build only when you ask.
 - **What it can see.** It ranks the sites in your history and opens up to 8 of
   them per build. It skips search engines, webmail, banking and logged-out
   marketing pages. Anything it can't open is reported, not hidden.
@@ -120,6 +145,14 @@ in between. The two custom tools run in the extension because they need
 `chrome.history` and `chrome.tabs`. Everything else happens in the agent's
 sandbox, where shell access is off: scraped pages are untrusted input.
 
+With an OpenAI-compatible API, the worker drives the function-calling loop itself.
+It stores scraped pages in a restricted virtual filesystem and supplies local
+`read`, `grep`, `glob` and `write` tools. It checkpoints the conversation and files
+after each tool result so a worker restart can continue unanswered calls. Only the
+homepage output path is writable; no shell or access to your computer's files is
+available to the model. The wire format follows the official
+[Chat Completions function-calling guide](https://developers.openai.com/api/docs/guides/function-calling).
+
 See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for the event flow, the layout, and
 the gotchas worth knowing.
 
@@ -135,12 +168,18 @@ harness               Bun scripts that run agent-core outside Chrome, and test t
 pnpm dev                 # WXT with hot reload
 pnpm typecheck           # all packages
 pnpm test                # unit tests (no API calls; needs Bun)
-pnpm extension:test      # loads the built extension into headless Chrome (no API calls)
+pnpm extension:test      # headless Chrome with a local mock API (no external API calls)
 
-cp .env.example .env     # add ANTHROPIC_API_KEY, then:
+cp .env.example .env     # configure your provider, then:
 pnpm agent:run           # a full build against the real API, with fixture history
 pnpm agent:verify        # check the output actually renders
 ```
+
+For compatible harness runs, set `API_PROVIDER=openai-compatible`, `OPENAI_API_KEY`,
+`OPENAI_BASE_URL` and `OPENAI_MODEL` in `.env`. `pnpm test` includes offline compatible
+tool-loop, resume, cancellation, cleanup and rendered-output tests. `extension:test`
+uses a local mock endpoint in an isolated Chrome profile. The managed-agent
+`agent:resume-test` and `agent:retention` scripts remain Anthropic-specific.
 
 ## Status
 

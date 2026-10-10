@@ -2,8 +2,10 @@ import {
   DEFAULT_MODEL,
   MODEL_CHOICES,
   STORAGE_KEYS as AGENT_KEYS,
-  type HomepageModel,
   type KVStore,
+  DEFAULT_API_SETTINGS,
+  getApiConfiguration,
+  type ApiSettings,
 } from "@homepage/agent-core";
 
 /**
@@ -17,6 +19,12 @@ export const KEYS = {
   homepage: "homepageData",
   systemPrompt: "systemPrompt",
   model: "model",
+  provider: "apiProvider",
+  openaiApiKey: "openaiApiKey",
+  openaiBaseUrl: "openaiBaseUrl",
+  openaiModel: "openaiModel",
+  /** Pins provider, endpoint, model and credentials while a build is in flight. */
+  activeBuildConfig: "activeBuildConfig",
   autoRebuild: "autoRebuild",
   /** ISO timestamp of the last auto-build *attempted* (success or not). */
   lastAutoBuildAttempt: "lastAutoBuildAttempt",
@@ -32,10 +40,8 @@ export interface Homepage {
   timestamp: string;
 }
 
-export interface Settings {
-  apiKey: string | null;
+export interface Settings extends ApiSettings {
   systemPrompt: string;
-  model: HomepageModel;
   /** Unset means on — auto-rebuild is opt-out. */
   autoRebuild: boolean;
   rebuildIntervalHours: number | null;
@@ -60,18 +66,40 @@ export async function loadSettings(): Promise<Settings> {
     KEYS.apiKey,
     KEYS.systemPrompt,
     KEYS.model,
+    KEYS.provider,
+    KEYS.openaiApiKey,
+    KEYS.openaiBaseUrl,
+    KEYS.openaiModel,
     KEYS.autoRebuild,
     KEYS.rebuildIntervalHours,
   ]);
   const model = s[KEYS.model] as string | undefined;
   return {
+    ...DEFAULT_API_SETTINGS,
+    provider: s[KEYS.provider] === "openai-compatible" ? "openai-compatible" : "anthropic",
     apiKey: (s[KEYS.apiKey] as string | undefined) ?? null,
     systemPrompt: (s[KEYS.systemPrompt] as string | undefined) ?? "",
     // Fall back if a stored model is no longer offered.
     model: MODEL_CHOICES.find((m) => m.id === model)?.id ?? DEFAULT_MODEL,
+    openaiApiKey: (s[KEYS.openaiApiKey] as string | undefined) ?? null,
+    openaiBaseUrl: (s[KEYS.openaiBaseUrl] as string | undefined) ?? DEFAULT_API_SETTINGS.openaiBaseUrl,
+    openaiModel: (s[KEYS.openaiModel] as string | undefined) ?? "",
     autoRebuild: s[KEYS.autoRebuild] !== false,
     rebuildIntervalHours: (s[KEYS.rebuildIntervalHours] as number | undefined) ?? null,
   };
+}
+
+/** Write connection fields together so the worker never sees half a provider switch. */
+export async function saveApiSettings(settings: ApiSettings): Promise<void> {
+  const config = getApiConfiguration(settings);
+  await browser.storage.local.set({
+    [KEYS.provider]: settings.provider,
+    [KEYS.apiKey]: settings.apiKey?.trim() || null,
+    [KEYS.model]: settings.model,
+    [KEYS.openaiApiKey]: settings.openaiApiKey?.trim() || null,
+    [KEYS.openaiBaseUrl]: config.provider === "openai-compatible" ? config.baseUrl : settings.openaiBaseUrl,
+    [KEYS.openaiModel]: settings.openaiModel.trim(),
+  });
 }
 
 export async function saveSetting<K extends "apiKey" | "systemPrompt" | "model" | "autoRebuild" | "rebuildIntervalHours">(

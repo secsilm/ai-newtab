@@ -1,5 +1,11 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { runHomepageBuild, type RunPhase } from "@homepage/agent-core";
+import {
+  getApiConfiguration,
+  hasApiConfiguration,
+  runConfiguredHomepageBuild,
+  OPENAI_CHECKPOINT_KEY,
+  type ApiConfiguration,
+  type RunPhase,
+} from "@homepage/agent-core";
 import { rebuildIntervalMs, shouldAutoRebuild } from "./auto-rebuild";
 import { browserBridge } from "./browser-bridge";
 import {
@@ -116,7 +122,7 @@ export class BuildManager {
     if (
       !shouldAutoRebuild({
         enabled: settings.autoRebuild,
-        hasApiKey: Boolean(settings.apiKey),
+        hasApiKey: hasApiConfiguration(settings),
         isRunning: this.running,
         lastBuildTimestamp: homepage?.timestamp,
         lastAutoAttemptTimestamp: lastAttempt,
@@ -141,17 +147,7 @@ export class BuildManager {
       return; // single-flight: a second start just attaches.
     }
 
-    const { apiKey, systemPrompt, model } = await loadSettings();
-    if (!apiKey) {
-      // Manual builds are gated behind the key-setup screen and auto-builds
-      // require a key, so this only happens if the key was removed.
-      console.warn("[BuildManager] startBuild aborted — no API key in storage");
-      const message = "No Anthropic API key found. Add your key and try again.";
-      this.state = { ...INITIAL_BUILD_STATE, phase: "error", error: message };
-      this.broadcast({ kind: "error", message });
-      return;
-    }
-
+    // Lock before the first await: heartbeat and user clicks can arrive together.
     this.running = true;
     this.controller = new AbortController();
     this.state = { ...INITIAL_BUILD_STATE, running: true, phase: "setup" };
@@ -160,20 +156,25 @@ export class BuildManager {
     console.log("[BuildManager] build started", { resume: Boolean(opts.resume) });
 
     try {
-      // The key is the user's own, read from local storage — there is no server
-      // to hide it behind. See ARCHITECTURE.md → Privacy.
-      const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-
+      const settings = await loadSettings();
       const resumeSessionId = opts.resume
         ? await extensionStore.get<string>(KEYS.activeSessionId)
         : undefined;
 
-      const result = await runHomepageBuild({
-        client,
+      const pinned = resumeSessionId
+        ? await extensionStore.get<ApiConfiguration>(KEYS.activeBuildConfig)
+        : undefined;
+      const configuration = pinned ?? getApiConfiguration(settings);
+      if (resumeSessionId && resumeSessionId.startsWith("openai-") !== (configuration.provider === "openai-compatible")) {
+        throw new Error("Interrupted build belongs to a different provider. Restore that provider in Settings or start a new build.");
+      }
+      await extensionStore.set(KEYS.activeBuildConfig, configuration);
+
+      const result = await runConfiguredHomepageBuild({
+        configuration,
         bridge: browserBridge,
         store: extensionStore,
-        userSystemPrompt: systemPrompt,
-        model,
+        userSystemPrompt: settings.systemPrompt,
         resumeSessionId,
         signal: this.controller.signal,
         callbacks: {
@@ -198,9 +199,18 @@ export class BuildManager {
       this.notifyFailure(message);
       console.error("[BuildManager] build failed", error);
     } finally {
-      this.running = false;
-      this.controller = null;
-      this.stopKeepalive();
+      try {
+        // The provider owns session cleanup. Preserve recovery information if
+        // setup/reattach failed before the provider entered its lifecycle.
+        if (!(await extensionStore.get<string>(KEYS.activeSessionId))) {
+          await extensionStore.remove(KEYS.activeBuildConfig);
+          await extensionStore.remove(OPENAI_CHECKPOINT_KEY);
+        }
+      } finally {
+        this.running = false;
+        this.controller = null;
+        this.stopKeepalive();
+      }
     }
   }
 

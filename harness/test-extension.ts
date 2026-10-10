@@ -8,7 +8,7 @@
  *   4. `startBuild` with no API key fails cleanly with an error message,
  *   5. `chrome.history` is readable, so the `history` permission is real.
  *
- * No API calls are made. Chrome 136+ ignores `--load-extension`, so the
+ * Only an isolated local mock API is called. Chrome 136+ ignores `--load-extension`, so the
  * extension is loaded over CDP's Extensions domain instead.
  *
  * Run: pnpm build && pnpm extension:test
@@ -31,6 +31,47 @@ if (!existsSync(join(EXT, "manifest.json"))) {
 
 const profile = mkdtempSync(join(tmpdir(), "hp-ext-"));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const MOCK_CODE = `import React from 'react';
+export default function PersonalizedHomepage() {
+  return <main><a href="https://example.com/story">Mock headline</a></main>;
+}`;
+const requests: any[] = [];
+let mockError = "";
+const mockApi = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  async fetch(request) {
+    if (new URL(request.url).pathname === "/news") {
+      return new Response('<html><head><title>Local news</title></head><body><a href="https://example.com/story">Mock headline</a></body></html>', { headers: { "Content-Type": "text/html" } });
+    }
+    if (request.method !== "POST" || new URL(request.url).pathname !== "/v1/chat/completions") return new Response("not found", { status: 404 });
+    const body: any = await request.json();
+    requests.push(body);
+    if (body.model !== "test/custom-model" || request.headers.get("Authorization") !== "Bearer test-compatible-key") mockError = "Wrong model or credential";
+    let name: string;
+    let args: object;
+    switch (requests.length) {
+      case 1: name = "getHistory"; args = {}; break;
+      case 2: name = "getPageHtml"; args = { urls: [`http://127.0.0.1:${mockApi.port}/news`], loadDelayMs: 0 }; break;
+      case 3: {
+        const result = JSON.parse(body.messages.at(-1).content);
+        if (!result.pages?.length) {
+          mockError = `Scrape failed: ${JSON.stringify(result)}`;
+          return new Response("scrape failed", { status: 500 });
+        }
+        name = "read"; args = { path: result.pages[0].mountPath }; break;
+      }
+      default: {
+        const result = JSON.parse(body.messages.at(-1).content);
+        if (!result.content?.includes("Mock headline")) mockError = "Local read did not return scraped content";
+        name = "write"; args = { path: "/mnt/session/outputs/homepage.tsx", content: MOCK_CODE }; break;
+      }
+    }
+    return Response.json({ choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: [
+      { id: `call-${requests.length}`, type: "function", function: { name, arguments: JSON.stringify(args) } },
+    ] } }] });
+  },
+});
 
 let failures = 0;
 const check = (label: string, pass: boolean, extra?: string) => {
@@ -152,7 +193,7 @@ try {
   const bodyText = await page.evaluate<string>("document.body.innerText");
   check(
     "renders the API-key setup screen",
-    /Connect your Anthropic API key/i.test(bodyText),
+    /Connect your AI provider/i.test(bodyText),
     bodyText.split("\n").filter(Boolean)[0]?.slice(0, 50),
   );
 
@@ -203,12 +244,106 @@ try {
     domains.join(", "),
   );
 
+  // ---- 6. legacy installs default to Anthropic; Settings works before a build
+  await page.evaluate(`chrome.storage.local.set({ apiKey: "test-legacy-key", model: "retired-model", autoRebuild: false })`);
+  await page.send("Page.reload");
+  await sleep(1000);
+  check("legacy API key still opens the first-build screen", /Build your homepage/.test(await page.evaluate<string>("document.body.innerText")));
+  const clickButton = async (text: string) => {
+    await page.evaluate(`(() => {
+      const button = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === ${JSON.stringify(text)});
+      if (!button || button.disabled) throw new Error('Button unavailable: ' + ${JSON.stringify(text)});
+      button.click();
+    })()`);
+    await sleep(100);
+  };
+  await clickButton("⚙️ Settings");
+  check("Settings offers legacy Claude model and key", await page.evaluate<boolean>(`document.querySelector('input[type=password]').value === 'test-legacy-key' && [...document.querySelectorAll('select')].some((s) => s.value === 'claude-sonnet-5-5')`));
+  await page.evaluate(`(() => {
+    const select = [...document.querySelectorAll('select')].find((s) => [...s.options].some((o) => o.value === 'openai-compatible'));
+    select.value = 'openai-compatible'; select.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await sleep(100);
+  await page.evaluate(`(() => {
+    const set = (input, value) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    set(document.querySelector('input[type=url]'), 'http://127.0.0.1:${mockApi.port}/v1/chat/completions/');
+    set(document.querySelector('input[type=password]'), 'test-compatible-key');
+    set(document.querySelector('input[placeholder="Exact model ID from your provider"]'), 'test/custom-model');
+  })()`);
+  await clickButton("Save & rebuild");
+
+  let stored: any;
+  for (let i = 0; i < 80; i++) {
+    await sleep(250);
+    stored = await page.evaluate("chrome.storage.local.get(null)");
+    if (stored.homepageData?.code || stored.buildSnapshot?.phase === "error") break;
+  }
+  check("compatible settings are saved and URL normalized", stored.apiProvider === "openai-compatible" && stored.openaiBaseUrl === `http://127.0.0.1:${mockApi.port}/v1` && stored.openaiModel === "test/custom-model");
+  check("switching provider preserves the Anthropic credential", stored.apiKey === "test-legacy-key");
+  check("worker completes history, browser scrape, local read and homepage write", stored.homepageData?.code === MOCK_CODE && requests.length === 4 && !mockError, mockError || stored.buildSnapshot?.error || `${requests.length} local API requests`);
+  // Cleanup may follow the done broadcast by a few storage operations.
+  await sleep(300);
+  stored = await page.evaluate("chrome.storage.local.get(null)");
+  check("completed compatible build removes conversation, pages and pinned configuration", !stored.openaiBuildCheckpoint && !stored.activeSessionId && !stored.activeBuildConfig);
+
+  // ---- 7. an interrupted build keeps its original provider/key/model --------
+  requests.length = 0;
+  const resumeId = "openai-resume-integration";
+  await page.evaluate(`chrome.storage.local.set(${JSON.stringify({
+    apiProvider: "anthropic", apiKey: null,
+    openaiApiKey: "changed-key", openaiModel: "changed-model",
+    activeSessionId: resumeId,
+    activeBuildConfig: { provider: "openai-compatible", apiKey: "test-compatible-key", baseUrl: `http://127.0.0.1:${mockApi.port}/v1`, model: "test/custom-model" },
+    openaiBuildCheckpoint: {
+      sessionId: resumeId, baseUrl: `http://127.0.0.1:${mockApi.port}/v1`, model: "test/custom-model", turns: 0,
+      files: {}, scrapedUrls: [], messages: [{ role: "system", content: "Build a homepage with the provided tools." }, { role: "user", content: "Build today's homepage." }],
+    },
+  })})`);
+  const resumed = await page.evaluate<any[]>(`new Promise((resolve) => {
+    const port = chrome.runtime.connect({ name: 'homepage-agent' });
+    const replies = [];
+    port.onMessage.addListener((m) => replies.push(m));
+    port.postMessage({ kind: 'startBuild', resume: true });
+    port.postMessage({ kind: 'startBuild', resume: true });
+    setTimeout(() => { port.disconnect(); resolve(replies); }, 7000);
+  })`);
+  check("resume uses pinned compatible provider despite changed Settings", resumed.some((m) => m.kind === "done") && !resumed.some((m) => m.kind === "error") && !mockError, mockError || resumed.find((m) => m.kind === "error")?.message);
+  check("duplicate start messages run only one build", requests.length === 4, `${requests.length} local requests`);
+
+  // ---- 8. automatic rebuild uses compatible credentials without an Anthropic key
+  requests.length = 0;
+  await page.evaluate(`chrome.storage.local.set(${JSON.stringify({
+    apiProvider: "openai-compatible", openaiApiKey: "test-compatible-key", openaiModel: "test/custom-model",
+    autoRebuild: true, homepageData: { code: MOCK_CODE, timestamp: "2000-01-01T00:00:00Z" },
+  })})`);
+  await page.evaluate(`chrome.alarms.create('homepage-heartbeat', { when: Date.now() + 100, periodInMinutes: 1 })`);
+  for (let i = 0; i < 80; i++) {
+    await sleep(250);
+    stored = await page.evaluate("chrome.storage.local.get(null)");
+    if (stored.lastAutoBuildAttempt && stored.buildSnapshot?.phase === "done") break;
+  }
+  check("heartbeat rebuilds using only compatible credentials", Boolean(stored.lastAutoBuildAttempt) && stored.homepageData?.timestamp !== "2000-01-01T00:00:00Z" && requests.length === 4 && !mockError, mockError || `${requests.length} local API requests`);
+  await page.evaluate("chrome.storage.local.set({ autoRebuild: false })");
+
+  await clickButton("⚙️ Settings");
+  check("saved compatible model is shown when reopening Settings", await page.evaluate<boolean>(`document.querySelector('input[placeholder="Exact model ID from your provider"]').value === 'test/custom-model'`));
+  const screenshot = process.env.EXTENSION_SCREENSHOT_PATH;
+  if (screenshot) {
+    const captured = await page.send("Page.captureScreenshot", { format: "png" });
+    if (captured.result?.data) await Bun.write(screenshot, Buffer.from(captured.result.data, "base64"));
+  }
+  await clickButton("Cancel");
+
   page.close();
   browser.close();
 } catch (err) {
   console.error(`\n❌ ${err instanceof Error ? err.message : err}`);
   failures++;
 } finally {
+  mockApi.stop(true);
   chrome.kill("SIGKILL");
   await sleep(300);
   rmSync(profile, { recursive: true, force: true });

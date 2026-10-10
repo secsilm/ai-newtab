@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { DEFAULT_MODEL, type HomepageModel } from "@homepage/agent-core";
+import { DEFAULT_API_SETTINGS, hasApiConfiguration, type ApiSettings } from "@homepage/agent-core";
 import { DEFAULT_REBUILD_INTERVAL_HOURS } from "@/lib/auto-rebuild";
 import { BUILD_STEPS } from "@/lib/protocol";
-import { KEYS, extensionStore, loadHomepage, loadSettings, saveSetting } from "@/lib/storage";
+import { KEYS, extensionStore, loadHomepage, loadSettings, saveApiSettings, saveSetting } from "@/lib/storage";
 import { toRenderable } from "@/lib/transpile";
 import { ApiKeySetup } from "./components/ApiKeySetup";
 import { BuildProgress } from "./components/BuildProgress";
@@ -13,9 +13,8 @@ import { useHomepageBuild } from "./useHomepageBuild";
 
 export default function App() {
   const [loading, setLoading] = useState(true);
-  const [apiKey, setApiKey] = useState<string | null>(null);
+  const [apiSettings, setApiSettings] = useState<ApiSettings>(DEFAULT_API_SETTINGS);
   const [systemPrompt, setSystemPrompt] = useState("");
-  const [model, setModel] = useState<HomepageModel>(DEFAULT_MODEL);
   const [autoRebuild, setAutoRebuild] = useState(true);
   const [intervalHours, setIntervalHours] = useState(DEFAULT_REBUILD_INTERVAL_HOURS);
   /** Transpiled homepage, ready for Sandpack. */
@@ -45,9 +44,8 @@ export default function App() {
           loadHomepage(),
           extensionStore.get<string>(KEYS.activeSessionId),
         ]);
-        setApiKey(settings.apiKey);
+        setApiSettings(settings);
         setSystemPrompt(settings.systemPrompt);
-        setModel(settings.model);
         setAutoRebuild(settings.autoRebuild);
         setIntervalHours(settings.rebuildIntervalHours ?? DEFAULT_REBUILD_INTERVAL_HOURS);
         setResumable(activeSession ?? null);
@@ -58,13 +56,15 @@ export default function App() {
     })();
   }, []);
 
-  const saveKey = useCallback(async (key: string) => {
-    await saveSetting("apiKey", key);
-    setApiKey(key);
+  const saveConnection = useCallback(async (settings: ApiSettings) => {
+    await saveApiSettings(settings);
+    setApiSettings(settings);
   }, []);
 
   const savePrompt = useCallback(
-    async (prompt: string) => {
+    async (prompt: string, settings: ApiSettings) => {
+      await saveApiSettings(settings);
+      setApiSettings(settings);
       await saveSetting("systemPrompt", prompt);
       setSystemPrompt(prompt);
       setShowSettings(false);
@@ -75,10 +75,6 @@ export default function App() {
   );
 
   // These persist immediately; the worker reads them on its next heartbeat or build.
-  const changeModel = useCallback(async (next: HomepageModel) => {
-    setModel(next);
-    await saveSetting("model", next);
-  }, []);
   const toggleAutoRebuild = useCallback(async (next: boolean) => {
     setAutoRebuild(next);
     await saveSetting("autoRebuild", next);
@@ -89,7 +85,20 @@ export default function App() {
   }, []);
 
   if (loading) return <div style={{ padding: 20, textAlign: "center" }}>Loading…</div>;
-  if (!apiKey) return <ApiKeySetup onSave={saveKey} />;
+  if (!hasApiConfiguration(apiSettings)) return <ApiKeySetup initialSettings={apiSettings} onSave={saveConnection} />;
+
+  const settingsModal = showSettings && (
+    <SettingsModal
+      initialPrompt={systemPrompt}
+      apiSettings={apiSettings}
+      autoRebuild={autoRebuild}
+      onToggleAutoRebuild={toggleAutoRebuild}
+      intervalHours={intervalHours}
+      onChangeInterval={changeInterval}
+      onClose={() => setShowSettings(false)}
+      onSave={savePrompt}
+    />
+  );
 
   // With no homepage to fall back to, a running build takes over the tab.
   if (state.running && (!renderedCode || viewProgress)) {
@@ -117,12 +126,14 @@ export default function App() {
           <button style={btn} onClick={() => build()}>
             Build today&apos;s homepage
           </button>
+          <button style={btn} onClick={() => setShowSettings(true)}>⚙️ Settings</button>
           {resumable && (
             <button style={{ ...btn, backgroundColor: "#555" }} onClick={() => build({ resume: true })}>
               Resume interrupted build
             </button>
           )}
         </div>
+        {settingsModal}
       </div>
     );
   }
@@ -202,19 +213,7 @@ export default function App() {
 
       <HomepagePreview code={renderedCode} />
 
-      {showSettings && (
-        <SettingsModal
-          initialPrompt={systemPrompt}
-          model={model}
-          onChangeModel={changeModel}
-          autoRebuild={autoRebuild}
-          onToggleAutoRebuild={toggleAutoRebuild}
-          intervalHours={intervalHours}
-          onChangeInterval={changeInterval}
-          onClose={() => setShowSettings(false)}
-          onSave={savePrompt}
-        />
-      )}
+      {settingsModal}
     </div>
   );
 }

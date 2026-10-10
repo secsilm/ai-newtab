@@ -3,7 +3,7 @@ import { AGENT_PORT } from "@/lib/protocol";
 
 /**
  * The service worker is the build host. It owns the agent loop (BuildManager),
- * holds the Anthropic session stream, runs the browser tools in-process, and
+ * drives the selected provider's agent loop, runs the browser tools in-process, and
  * drives the scheduled rebuild from an alarm.
  *
  * New-tab pages are thin views that connect on AGENT_PORT. Closing every tab

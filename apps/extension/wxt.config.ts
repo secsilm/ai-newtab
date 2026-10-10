@@ -14,7 +14,7 @@ export default defineConfig({
       "alarms", //        heartbeat: scheduled rebuilds + reattach after a worker kill
       "notifications", // surface a failed headless rebuild when no tab is open
     ],
-    // Needed to scrape arbitrary pages; also exempts api.anthropic.com from CORS.
+    // Scraping arbitrary pages and fetching Anthropic/custom API endpoints from the worker.
     host_permissions: ["<all_urls>"],
   },
 });

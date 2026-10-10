@@ -1,5 +1,5 @@
 /**
- * End-to-end build against the real API (needs ANTHROPIC_API_KEY in .env).
+ * End-to-end build against the selected real API (configure credentials in .env).
  *
  * Exercises the exact orchestrator the extension runs, with a fixture/fetch
  * bridge standing in for chrome.history and chrome.tabs. Verifies: agent +
@@ -8,16 +8,21 @@
  *
  * Run: pnpm agent:run
  */
-import Anthropic from "@anthropic-ai/sdk";
-import { runHomepageBuild } from "@homepage/agent-core";
+import { DEFAULT_API_SETTINGS, getApiConfiguration, runConfiguredHomepageBuild } from "@homepage/agent-core";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { FileKVStore, OUT_DIR, OUT_PATH, STATE_PATH, nodeBridge } from "./node-bridge";
 
 async function main() {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set (put it in .env)");
-
-  const client = new Anthropic({ apiKey });
+  const provider = process.env.API_PROVIDER ?? "anthropic";
+  if (provider !== "anthropic" && provider !== "openai-compatible") throw new Error("API_PROVIDER must be anthropic or openai-compatible");
+  const configuration = getApiConfiguration({
+    ...DEFAULT_API_SETTINGS,
+    provider,
+    apiKey: process.env.ANTHROPIC_API_KEY ?? null,
+    openaiApiKey: process.env.OPENAI_API_KEY ?? null,
+    openaiBaseUrl: process.env.OPENAI_BASE_URL ?? DEFAULT_API_SETTINGS.openaiBaseUrl,
+    openaiModel: process.env.OPENAI_MODEL ?? "",
+  });
   const store = new FileKVStore(STATE_PATH);
 
   mkdirSync(OUT_DIR, { recursive: true });
@@ -25,8 +30,8 @@ async function main() {
   const started = Date.now();
   let lastPhase = "";
 
-  const result = await runHomepageBuild({
-    client,
+  const result = await runConfiguredHomepageBuild({
+    configuration,
     bridge: nodeBridge,
     store,
     userSystemPrompt: process.env.HOMEPAGE_PROMPT,
