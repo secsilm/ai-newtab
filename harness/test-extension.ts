@@ -39,11 +39,13 @@ const requests: any[] = [];
 const modelRequests: string[] = [];
 const responseRequests: any[] = [];
 let mockError = "";
+let forceApiFailure = false;
 const mockApi = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
   async fetch(request) {
     if (request.method === "POST" && new URL(request.url).pathname === "/v1/responses") {
+      if (forceApiFailure) return new Response("", { status: 503 });
       const body: any = await request.json();
       if (body.model !== "gpt-6.1-sol" || body.store !== false || request.headers.get("Authorization") !== "Bearer test-compatible-key") mockError = "Wrong Responses configuration";
       let name = "connectionCheck";
@@ -443,6 +445,32 @@ try {
     if (responseRequests.length === 2 && !stored.activeSessionId && stored.buildSnapshot?.phase === "done") break;
   }
   check("GPT-6 Responses build completes with reasoning and tool results preserved", responseRequests.length === 2 && !mockError && stored.openaiModel === "gpt-6.1-sol" && stored.homepageData?.code === MOCK_CODE, mockError);
+
+  // Host controls and errors must occupy their own space above arbitrary generated content.
+  for (const width of [1280, 320]) {
+    await page.send("Emulation.setDeviceMetricsOverride", { width, height: 800, deviceScaleFactor: 1, mobile: false });
+    await sleep(100);
+    check(`homepage controls do not cover content at ${width}px`, await page.evaluate<boolean>(`(() => {
+      const controls = document.querySelector('header[aria-label="Homepage controls"]').getBoundingClientRect();
+      const preview = document.querySelector('.homepage-preview').getBoundingClientRect();
+      const layout = document.querySelector('.homepage-preview .sp-layout').getBoundingClientRect();
+      return controls.bottom <= preview.top && preview.height > 0 && layout.top >= preview.top && layout.bottom <= innerHeight + 1
+        && document.documentElement.scrollWidth <= innerWidth;
+    })()`));
+  }
+  forceApiFailure = true;
+  await clickButton("↻ Rebuild");
+  for (let i = 0; i < 40; i++) {
+    if (await page.evaluate<boolean>(`!!document.querySelector('button[title="Dismiss"]')`)) break;
+    await sleep(100);
+  }
+  check("failed-build message does not cover the toolbar or homepage", await page.evaluate<boolean>(`(() => {
+    const controls = document.querySelector('header[aria-label="Homepage controls"]').getBoundingClientRect();
+    const error = document.querySelector('button[title="Dismiss"]').parentElement.getBoundingClientRect();
+    const preview = document.querySelector('.homepage-preview').getBoundingClientRect();
+    return controls.bottom <= error.top && error.bottom <= preview.top && preview.bottom <= innerHeight + 1
+      && document.documentElement.scrollWidth <= innerWidth;
+  })()`));
 
   page.close();
   browser.close();

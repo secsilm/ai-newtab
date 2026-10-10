@@ -146,8 +146,8 @@ export default function App() {
   const showError = state.error && dismissedError !== state.error;
 
   return (
-    <div style={{ height: "100vh", width: "100vw" }}>
-      <div style={{ position: "fixed", top: 20, right: 20, zIndex: 999, display: "flex", gap: 8 }}>
+    <div style={{ height: "100dvh", width: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <header aria-label="Homepage controls" style={{ display: "flex", justifyContent: "flex-end", flexWrap: "wrap", gap: 8, padding: "12px 16px", backgroundColor: "white", borderBottom: "1px solid #e2e6ee", flexShrink: 0 }}>
         {state.running ? (
           // A build is running in the background (from here, another tab, or the
           // scheduled rebuild). Let the user watch it without losing this page.
@@ -175,25 +175,23 @@ export default function App() {
         <button style={btn} onClick={() => setShowSettings(true)} title="Customize homepage">
           ⚙️ Settings
         </button>
-      </div>
+      </header>
 
       {showError && (
         <div
           style={{
             ...errorBox,
-            position: "fixed",
-            top: 20,
-            left: 20,
-            right: 260,
-            zIndex: 999,
+            margin: "12px 16px",
+            flexShrink: 0,
             padding: "10px 14px",
             borderRadius: 6,
             display: "flex",
+            flexWrap: "wrap",
             alignItems: "flex-start",
             gap: 12,
           }}
         >
-          <span style={{ flex: 1 }}>
+          <span style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>
             <b>Build failed.</b> {state.error}
           </span>
           <button style={{ ...btn, padding: "4px 10px", backgroundColor: "#a02620" }} onClick={() => build()}>
@@ -216,7 +214,9 @@ export default function App() {
         </div>
       )}
 
-      <HomepagePreview code={renderedCode} />
+      <div className="homepage-preview" style={{ flex: 1, minHeight: 0 }}>
+        <HomepagePreview code={renderedCode} />
+      </div>
 
       {settingsModal}
     </div>
