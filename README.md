@@ -67,6 +67,15 @@ you open.
 
 Click **⚙️ Settings** on the new tab.
 
+**Output language.** Choose Simplified Chinese, Traditional Chinese, English or
+another listed language for homepage headings, summaries and navigation text,
+as well as the final build summary. **Auto** keeps the existing source-language
+behavior. The selection is saved locally and applies to manual and automatic
+rebuilds for both providers. It takes priority over conflicting language requests
+in standing instructions. Existing interrupted builds keep their original language;
+start a new build to apply a changed language. For CLI builds, set
+`HOMEPAGE_OUTPUT_LANGUAGE` in `.env` (for example `zh-CN`).
+
 **Instructions.** Anything you write here goes into every build and takes priority
 over the agent's own defaults. This box sets both the content and the look:
 

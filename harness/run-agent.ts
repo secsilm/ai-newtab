@@ -8,7 +8,7 @@
  *
  * Run: pnpm agent:run
  */
-import { DEFAULT_API_SETTINGS, getApiConfiguration, runConfiguredHomepageBuild, type OpenAIApiFormat } from "@homepage/agent-core";
+import { DEFAULT_API_SETTINGS, getApiConfiguration, normalizeOutputLanguage, runConfiguredHomepageBuild, type OpenAIApiFormat } from "@homepage/agent-core";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { FileKVStore, OUT_DIR, OUT_PATH, STATE_PATH, nodeBridge } from "./node-bridge";
 
@@ -38,6 +38,7 @@ async function main() {
     bridge: nodeBridge,
     store,
     userSystemPrompt: process.env.HOMEPAGE_PROMPT,
+    outputLanguage: normalizeOutputLanguage(process.env.HOMEPAGE_OUTPUT_LANGUAGE),
     callbacks: {
       onPhase: (phase, detail) => {
         if (phase !== lastPhase) {

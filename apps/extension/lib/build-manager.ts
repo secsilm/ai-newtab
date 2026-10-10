@@ -175,6 +175,7 @@ export class BuildManager {
         bridge: browserBridge,
         store: extensionStore,
         userSystemPrompt: settings.systemPrompt,
+        outputLanguage: settings.outputLanguage,
         resumeSessionId,
         signal: this.controller.signal,
         callbacks: {

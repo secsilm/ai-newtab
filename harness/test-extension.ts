@@ -335,6 +335,12 @@ try {
     select.value = 'test/custom-model'; select.dispatchEvent(new Event('change', { bubbles: true }));
   })()`);
   await sleep(100);
+  check("existing settings default to automatic output language", await page.evaluate<boolean>(`document.querySelector('select[aria-label="Output language"]').value === 'auto'`));
+  await page.evaluate(`(() => {
+    const select = document.querySelector('select[aria-label="Output language"]');
+    select.value = 'zh-CN'; select.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await sleep(100);
   await clickButton("Save & rebuild");
 
   let stored: any;
@@ -345,6 +351,7 @@ try {
   }
   check("compatible settings are saved and URL normalized", stored.apiProvider === "openai-compatible" && stored.openaiBaseUrl === `http://127.0.0.1:${mockApi.port}/v1` && stored.openaiModel === "test/custom-model");
   check("switching provider preserves the Anthropic credential", stored.apiKey === "test-legacy-key");
+  check("selected output language is saved and sent to the model", stored.outputLanguage === "zh-CN" && requests[0]?.messages.some((m: any) => m.role === "user" && m.content.includes("Simplified Chinese")));
   check("worker completes history, browser scrape, local read and homepage write", stored.homepageData?.code === MOCK_CODE && requests.length === 4 && !mockError, mockError || stored.buildSnapshot?.error || `${requests.length} local API requests`);
   // Cleanup may follow the done broadcast by a few storage operations.
   await sleep(300);
@@ -388,10 +395,12 @@ try {
     if (stored.lastAutoBuildAttempt && stored.buildSnapshot?.phase === "done") break;
   }
   check("heartbeat rebuilds using only compatible credentials", Boolean(stored.lastAutoBuildAttempt) && stored.homepageData?.timestamp !== "2000-01-01T00:00:00Z" && requests.length === 4 && !mockError, mockError || `${requests.length} local API requests`);
+  check("automatic rebuild uses the saved output language", requests[0]?.messages.some((m: any) => m.role === "user" && m.content.includes("Simplified Chinese")));
   await page.evaluate("chrome.storage.local.set({ autoRebuild: false })");
 
   await clickButton("⚙️ Settings");
   check("saved compatible model is shown when reopening Settings", await page.evaluate<boolean>(`document.querySelector('input[placeholder="Exact model ID from your provider"]').value === 'test/custom-model'`));
+  check("saved output language is shown when reopening Settings", await page.evaluate<boolean>(`document.querySelector('select[aria-label="Output language"]').value === 'zh-CN'`));
   await page.evaluate(`(() => {
     const input = document.querySelector('input[placeholder="Exact model ID from your provider"]');
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'gpt-6.1-sol');

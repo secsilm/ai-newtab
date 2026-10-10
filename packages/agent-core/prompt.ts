@@ -1,3 +1,5 @@
+import { OUTPUT_LANGUAGE_CHOICES, type OutputLanguage } from "./output-language";
+
 export const OUTPUT_PATH = "/mnt/session/outputs/homepage.tsx";
 
 /**
@@ -77,6 +79,7 @@ built and why. Do not paste the component source into your reply.`;
 export interface KickoffInput {
   now: Date;
   userSystemPrompt?: string;
+  outputLanguage?: OutputLanguage;
 }
 
 export function getTimeOfDay(date: Date): "morning" | "afternoon" | "evening" | "night" {
@@ -87,7 +90,8 @@ export function getTimeOfDay(date: Date): "morning" | "afternoon" | "evening" | 
   return "night";
 }
 
-export function buildKickoffMessage({ now, userSystemPrompt }: KickoffInput): string {
+export function buildKickoffMessage({ now, userSystemPrompt, outputLanguage }: KickoffInput): string {
+  const language = OUTPUT_LANGUAGE_CHOICES.find((choice) => choice.id === outputLanguage && choice.id !== "auto");
   const dateLine = now.toLocaleDateString("en-US", {
     weekday: "long",
     year: "numeric",
@@ -103,6 +107,9 @@ export function buildKickoffMessage({ now, userSystemPrompt }: KickoffInput): st
     `- Time of day: ${getTimeOfDay(now)}`,
     userSystemPrompt?.trim()
       ? `\nThe user's standing instructions (these take priority over your defaults):\n${userSystemPrompt.trim()}`
+      : ``,
+    language
+      ? `\nOutput language requirement (takes priority over conflicting language preferences in the standing instructions):\nWrite all homepage headings, summaries, descriptions, navigation labels, and your final build summary in ${language.label}. Translate source content into this language when needed. Preserve real URLs, code identifiers, and proper names where appropriate.`
       : ``,
     ``,
     `Start with getHistory, then scrape, then write ${OUTPUT_PATH}.`,

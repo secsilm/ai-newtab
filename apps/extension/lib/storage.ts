@@ -6,6 +6,8 @@ import {
   DEFAULT_API_SETTINGS,
   getApiConfiguration,
   type ApiSettings,
+  normalizeOutputLanguage,
+  type OutputLanguage,
 } from "@homepage/agent-core";
 
 /**
@@ -18,6 +20,7 @@ export const KEYS = {
   ...AGENT_KEYS,
   homepage: "homepageData",
   systemPrompt: "systemPrompt",
+  outputLanguage: "outputLanguage",
   model: "model",
   provider: "apiProvider",
   openaiApiKey: "openaiApiKey",
@@ -43,6 +46,7 @@ export interface Homepage {
 
 export interface Settings extends ApiSettings {
   systemPrompt: string;
+  outputLanguage: OutputLanguage;
   /** Unset means on — auto-rebuild is opt-out. */
   autoRebuild: boolean;
   rebuildIntervalHours: number | null;
@@ -66,6 +70,7 @@ export async function loadSettings(): Promise<Settings> {
   const s = await browser.storage.local.get([
     KEYS.apiKey,
     KEYS.systemPrompt,
+    KEYS.outputLanguage,
     KEYS.model,
     KEYS.provider,
     KEYS.openaiApiKey,
@@ -81,6 +86,7 @@ export async function loadSettings(): Promise<Settings> {
     provider: s[KEYS.provider] === "openai-compatible" ? "openai-compatible" : "anthropic",
     apiKey: (s[KEYS.apiKey] as string | undefined) ?? null,
     systemPrompt: (s[KEYS.systemPrompt] as string | undefined) ?? "",
+    outputLanguage: normalizeOutputLanguage(s[KEYS.outputLanguage]),
     // Fall back if a stored model is no longer offered.
     model: MODEL_CHOICES.find((m) => m.id === model)?.id ?? DEFAULT_MODEL,
     openaiApiKey: (s[KEYS.openaiApiKey] as string | undefined) ?? null,
@@ -106,7 +112,7 @@ export async function saveApiSettings(settings: ApiSettings): Promise<void> {
   });
 }
 
-export async function saveSetting<K extends "apiKey" | "systemPrompt" | "model" | "autoRebuild" | "rebuildIntervalHours">(
+export async function saveSetting<K extends "apiKey" | "systemPrompt" | "outputLanguage" | "model" | "autoRebuild" | "rebuildIntervalHours">(
   key: K,
   value: Settings[K],
 ): Promise<void> {

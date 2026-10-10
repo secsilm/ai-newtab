@@ -1,6 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { buildHistoryDigest, slugifyUrl } from "./history-digest";
 import { OUTPUT_PATH, buildKickoffMessage } from "./prompt";
+import type { OutputLanguage } from "./output-language";
 import { DEFAULTS } from "./schemas";
 import { STORAGE_KEYS, ensureAgent, ensureEnvironment, type HomepageModel } from "./setup";
 import type {
@@ -34,6 +35,7 @@ export interface RunOptions {
   bridge: BrowserBridge;
   store: KVStore;
   userSystemPrompt?: string;
+  outputLanguage?: OutputLanguage;
   /** Ignored when resuming: the session keeps the agent (and model) it started with. */
   model?: HomepageModel;
   callbacks?: RunCallbacks;
@@ -194,6 +196,7 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
                   text: buildKickoffMessage({
                     now: opts.now ?? new Date(),
                     userSystemPrompt: opts.userSystemPrompt,
+                    outputLanguage: opts.outputLanguage,
                   }),
                 },
               ],

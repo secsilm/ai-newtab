@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { DEFAULT_API_SETTINGS, hasApiConfiguration, type ApiSettings } from "@homepage/agent-core";
+import { DEFAULT_API_SETTINGS, hasApiConfiguration, type ApiSettings, type OutputLanguage } from "@homepage/agent-core";
 import { DEFAULT_REBUILD_INTERVAL_HOURS } from "@/lib/auto-rebuild";
 import { BUILD_STEPS } from "@/lib/protocol";
 import { KEYS, extensionStore, loadHomepage, loadSettings, saveApiSettings, saveSetting } from "@/lib/storage";
@@ -15,6 +15,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [apiSettings, setApiSettings] = useState<ApiSettings>(DEFAULT_API_SETTINGS);
   const [systemPrompt, setSystemPrompt] = useState("");
+  const [outputLanguage, setOutputLanguage] = useState<OutputLanguage>("auto");
   const [autoRebuild, setAutoRebuild] = useState(true);
   const [intervalHours, setIntervalHours] = useState(DEFAULT_REBUILD_INTERVAL_HOURS);
   /** Transpiled homepage, ready for Sandpack. */
@@ -46,6 +47,7 @@ export default function App() {
         ]);
         setApiSettings(settings);
         setSystemPrompt(settings.systemPrompt);
+        setOutputLanguage(settings.outputLanguage);
         setAutoRebuild(settings.autoRebuild);
         setIntervalHours(settings.rebuildIntervalHours ?? DEFAULT_REBUILD_INTERVAL_HOURS);
         setResumable(activeSession ?? null);
@@ -62,11 +64,13 @@ export default function App() {
   }, []);
 
   const savePrompt = useCallback(
-    async (prompt: string, settings: ApiSettings) => {
+    async (prompt: string, settings: ApiSettings, language: OutputLanguage) => {
       await saveApiSettings(settings);
       setApiSettings(settings);
       await saveSetting("systemPrompt", prompt);
       setSystemPrompt(prompt);
+      await saveSetting("outputLanguage", language);
+      setOutputLanguage(language);
       setShowSettings(false);
       setRenderedCode(null);
       build();
@@ -90,6 +94,7 @@ export default function App() {
   const settingsModal = showSettings && (
     <SettingsModal
       initialPrompt={systemPrompt}
+      initialOutputLanguage={outputLanguage}
       apiSettings={apiSettings}
       autoRebuild={autoRebuild}
       onToggleAutoRebuild={toggleAutoRebuild}

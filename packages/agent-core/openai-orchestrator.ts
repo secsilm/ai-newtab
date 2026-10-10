@@ -2,6 +2,7 @@ import { normalizeOpenAIBaseUrl, resolveOpenAIApiFormat, type OpenAIApiFormat } 
 import { apiFailure, parseResponsesMessage, responsesInput, type CompatibleMessage as Message } from "./openai-protocol";
 import { buildHistoryDigest, slugifyUrl } from "./history-digest";
 import { HOMEPAGE_SYSTEM_PROMPT, OUTPUT_PATH, buildKickoffMessage } from "./prompt";
+import type { OutputLanguage } from "./output-language";
 import { DEFAULTS, GET_HISTORY_SCHEMA, GET_PAGE_HTML_SCHEMA, type ToolInputSchema } from "./schemas";
 import { STORAGE_KEYS } from "./setup";
 import type { BrowserBridge, HomepageBuildResult, KVStore, RunCallbacks } from "./types";
@@ -54,6 +55,7 @@ export interface OpenAIRunOptions {
   bridge: BrowserBridge;
   store: KVStore;
   userSystemPrompt?: string;
+  outputLanguage?: OutputLanguage;
   callbacks?: RunCallbacks;
   signal?: AbortSignal;
   resumeSessionId?: string;
@@ -85,7 +87,7 @@ export async function runOpenAIHomepageBuild(opts: OpenAIRunOptions): Promise<Ho
       sessionId: `openai-${crypto.randomUUID()}`, baseUrl, model: opts.model, apiFormat,
       messages: [
         { role: "system", content: HOMEPAGE_SYSTEM_PROMPT + "\n\nYour files are stored locally by the host. Use only the provided tools; no shell is available. The read tool uses character offsets, and grep searches literal strings." },
-        { role: "user", content: buildKickoffMessage({ now: opts.now ?? new Date(), userSystemPrompt: opts.userSystemPrompt }) },
+        { role: "user", content: buildKickoffMessage({ now: opts.now ?? new Date(), userSystemPrompt: opts.userSystemPrompt, outputLanguage: opts.outputLanguage }) },
       ],
       files: Object.create(null), turns: 0, scrapedUrls: [],
     };

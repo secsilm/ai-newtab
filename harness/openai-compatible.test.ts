@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_API_SETTINGS, DEFAULT_MODEL, OPENAI_CHECKPOINT_KEY, OUTPUT_PATH, STORAGE_KEYS,
   getApiConfiguration, hasApiConfiguration, normalizeOpenAIBaseUrl, resolveOpenAIApiFormat, runOpenAIHomepageBuild,
+  buildKickoffMessage, normalizeOutputLanguage,
   type BrowserBridge, type KVStore, type OpenAIRunOptions,
 } from "@homepage/agent-core";
 import { fixtureHistory } from "./node-bridge";
@@ -62,6 +63,34 @@ describe("API configuration", () => {
   });
 });
 
+test("output language keeps automatic defaults and overrides conflicting standing preferences", () => {
+  const now = new Date("2026-10-10T04:00:00Z");
+  expect(normalizeOutputLanguage(undefined)).toBe("auto");
+  expect(normalizeOutputLanguage("unknown")).toBe("auto");
+  expect(normalizeOutputLanguage("zh-TW")).toBe("zh-TW");
+  expect(buildKickoffMessage({ now, outputLanguage: "auto" })).toBe(buildKickoffMessage({ now }));
+  const prompt = buildKickoffMessage({ now, outputLanguage: "zh-CN", userSystemPrompt: "Write in English and focus on Rust." });
+  expect(prompt).toContain("Simplified Chinese");
+  expect(prompt).toContain("focus on Rust");
+  expect(prompt).toContain("takes priority over conflicting language preferences");
+  expect(prompt).toContain("Preserve real URLs");
+});
+
+test("both compatible protocols send the selected output language", async () => {
+  for (const apiFormat of ["chat-completions", "responses"] as const) {
+    const opts = options((body) => {
+      const input = apiFormat === "responses" ? body.input : body.messages;
+      expect(input.find((item: any) => item.role === "user").content).toContain("Traditional Chinese");
+      return apiFormat === "responses"
+        ? Response.json({ status: "completed", output: [{ type: "function_call", call_id: "write", name: "write", arguments: JSON.stringify({ path: OUTPUT_PATH, content: CODE }) }] })
+        : reply(null, [call("write", "write", { path: OUTPUT_PATH, content: CODE })]);
+    });
+    opts.apiFormat = apiFormat;
+    opts.outputLanguage = "zh-TW";
+    expect((await runOpenAIHomepageBuild(opts)).code).toBe(CODE);
+  }
+});
+
 test("GPT-6 models default to Responses; explicit protocol overrides remain available", () => {
   expect(resolveOpenAIApiFormat("gpt-6.1-sol")).toBe("responses");
   expect(resolveOpenAIApiFormat("vendor/gpt-6-astra")).toBe("responses");
@@ -95,16 +124,20 @@ test("Responses runs local tools and resumes with encrypted reasoning and correl
     return responseCall("write", { path: OUTPUT_PATH, content: CODE });
   }, store);
   opts.model = "gpt-6.1-sol";
+  opts.outputLanguage = "zh-CN";
   expect((await runOpenAIHomepageBuild(opts)).code).toBe(CODE);
   const checkpoint = store.checkpoints.find((c) => c.messages.at(-1).response_items);
   const resumed = new MemoryStore();
   await resumed.set(OPENAI_CHECKPOINT_KEY, checkpoint);
   const resumedOpts = options((body) => {
+    expect(body.input.find((item: any) => item.role === "user").content).toContain("Simplified Chinese");
+    expect(body.input.find((item: any) => item.role === "user").content).not.toContain("in English");
     expect(body.input).toContainEqual(reasoning);
     expect(body.input.at(-1).call_id).toBe("call_getHistory");
     return responseCall("write", { path: OUTPUT_PATH, content: CODE });
   }, resumed);
   resumedOpts.model = "gpt-6.1-sol";
+  resumedOpts.outputLanguage = "en";
   resumedOpts.resumeSessionId = checkpoint.sessionId;
   expect((await runOpenAIHomepageBuild(resumedOpts)).code).toBe(CODE);
   expect(resumed.data.size).toBe(0);
