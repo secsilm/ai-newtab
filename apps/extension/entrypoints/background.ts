@@ -1,5 +1,6 @@
 import { BuildManager } from "@/lib/build-manager";
 import { AGENT_PORT } from "@/lib/protocol";
+import { testOpenAIConnection } from "@homepage/agent-core";
 
 /**
  * The service worker is the build host. It owns the agent loop (BuildManager),
@@ -15,6 +16,15 @@ const HEARTBEAT_ALARM = "homepage-heartbeat";
 
 export default defineBackground(() => {
   const manager = new BuildManager();
+
+  browser.runtime.onMessage.addListener((message, sender) => {
+    if (message?.kind !== "testApiConnection" || sender.id !== browser.runtime.id) return;
+    if (typeof message.baseUrl !== "string" || typeof message.apiKey !== "string" ||
+      (message.model !== undefined && typeof message.model !== "string")) {
+      return Promise.resolve({ ok: false, models: [], message: "Invalid connection settings." });
+    }
+    return testOpenAIConnection({ baseUrl: message.baseUrl, apiKey: message.apiKey, model: message.model });
+  });
 
   browser.runtime.onConnect.addListener((port) => {
     if (port.name === AGENT_PORT) manager.attach(port);

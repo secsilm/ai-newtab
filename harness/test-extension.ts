@@ -36,11 +36,19 @@ export default function PersonalizedHomepage() {
   return <main><a href="https://example.com/story">Mock headline</a></main>;
 }`;
 const requests: any[] = [];
+const modelRequests: string[] = [];
 let mockError = "";
 const mockApi = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
   async fetch(request) {
+    if (request.method === "GET" && new URL(request.url).pathname === "/v1/models") {
+      modelRequests.push(request.url);
+      if (request.headers.get("Authorization") !== "Bearer test-compatible-key") return new Response("", { status: 401 });
+      return Response.json(new URL(request.url).searchParams.has("after")
+        ? { data: [{ id: "test/custom-model" }], has_more: false }
+        : { data: [{ id: "test/other-model" }], has_more: true, last_id: "test/other-model" });
+    }
     if (new URL(request.url).pathname === "/news") {
       return new Response('<html><head><title>Local news</title></head><body><a href="https://example.com/story">Mock headline</a></body></html>', { headers: { "Content-Type": "text/html" } });
     }
@@ -271,8 +279,43 @@ try {
     };
     set(document.querySelector('input[type=url]'), 'http://127.0.0.1:${mockApi.port}/v1/chat/completions/');
     set(document.querySelector('input[type=password]'), 'test-compatible-key');
-    set(document.querySelector('input[placeholder="Exact model ID from your provider"]'), 'test/custom-model');
   })()`);
+  await clickButton("Test connection");
+  for (let i = 0; i < 40; i++) {
+    if (await page.evaluate<boolean>(`!!document.querySelector('select[aria-label="Available models"]')`)) break;
+    await sleep(100);
+  }
+  check("connection test works before entering a model and loads the complete list", await page.evaluate<boolean>(`document.querySelector('[role=status]')?.textContent.includes('Loaded 2 models') && document.querySelector('select[aria-label="Available models"]')?.options.length === 3`) && modelRequests.length === 2 && requests.length === 0);
+  await page.evaluate(`(() => {
+    const input = document.querySelector('input[type=password]');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'wrong-key');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await sleep(100);
+  check("changing credentials clears the previous model list", await page.evaluate<boolean>(`!document.querySelector('select[aria-label="Available models"]') && !document.querySelector('[role=status]')`));
+  await clickButton("Test connection");
+  for (let i = 0; i < 40; i++) {
+    if (await page.evaluate<boolean>(`!!document.querySelector('[role=status]')`)) break;
+    await sleep(100);
+  }
+  check("invalid credentials display a failed connection test", await page.evaluate<boolean>(`document.querySelector('[role=status]')?.textContent.includes('HTTP 401') && !document.querySelector('select[aria-label="Available models"]')`));
+  await page.evaluate(`(() => {
+    const input = document.querySelector('input[type=password]');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'test-compatible-key');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await sleep(100);
+  await clickButton("Test connection");
+  for (let i = 0; i < 40; i++) {
+    if (await page.evaluate<boolean>(`!!document.querySelector('select[aria-label="Available models"]')`)) break;
+    await sleep(100);
+  }
+  await page.evaluate(`(() => {
+    const select = document.querySelector('select[aria-label="Available models"]');
+    if (!select) throw new Error('Model list not loaded');
+    select.value = 'test/custom-model'; select.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await sleep(100);
   await clickButton("Save & rebuild");
 
   let stored: any;

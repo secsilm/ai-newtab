@@ -88,6 +88,14 @@ build, including after a failed build.
 For **OpenAI-compatible**, use your provider's API root including its version path
 (for example `https://api.example.com/v1`) or the complete `/chat/completions` URL.
 Enter the exact model ID offered by that provider; there is no fixed model list.
+After filling in Base URL and API key, click **Test connection** to check access
+and load the provider's model list into a dropdown. Paginated lists are fetched
+in full when the provider uses `has_more`/`after` pagination. You can also select
+**Enter a model ID manually**. If the provider does
+not support model listing, enter a model ID and test again: the extension sends
+a short synthetic Chat Completions request. No browsing data is sent by the test.
+The status distinguishes model-list access from a successful model request;
+neither test guarantees function-calling support. Tests time out after 20 seconds.
 Local HTTP endpoints such as `http://localhost:1234/v1` work too. For a local API
 without authentication, enter a placeholder key such as `local`.
 

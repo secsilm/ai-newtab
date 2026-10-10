@@ -5,9 +5,11 @@
  * for its state (see build-manager.ts). Tabs are thin, disposable views: they
  * connect on AGENT_PORT, receive a snapshot, then stream deltas.
  */
-import type { RunPhase } from "@homepage/agent-core";
+import type { ConnectionTestInput, RunPhase } from "@homepage/agent-core";
 
 export const AGENT_PORT = "homepage-agent";
+
+export type ConnectionTestMessage = ConnectionTestInput & { kind: "testApiConnection" };
 
 /** Live build state. The worker holds the canonical copy; tabs reduce into a mirror. */
 export interface BuildState {
