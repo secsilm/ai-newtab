@@ -8,13 +8,15 @@
  *
  * Run: pnpm agent:run
  */
-import { DEFAULT_API_SETTINGS, getApiConfiguration, runConfiguredHomepageBuild } from "@homepage/agent-core";
+import { DEFAULT_API_SETTINGS, getApiConfiguration, runConfiguredHomepageBuild, type OpenAIApiFormat } from "@homepage/agent-core";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { FileKVStore, OUT_DIR, OUT_PATH, STATE_PATH, nodeBridge } from "./node-bridge";
 
 async function main() {
   const provider = process.env.API_PROVIDER ?? "anthropic";
   if (provider !== "anthropic" && provider !== "openai-compatible") throw new Error("API_PROVIDER must be anthropic or openai-compatible");
+  const apiFormat = process.env.OPENAI_API_FORMAT ?? "auto";
+  if (!["auto", "responses", "chat-completions"].includes(apiFormat)) throw new Error("OPENAI_API_FORMAT must be auto, responses or chat-completions");
   const configuration = getApiConfiguration({
     ...DEFAULT_API_SETTINGS,
     provider,
@@ -22,6 +24,7 @@ async function main() {
     openaiApiKey: process.env.OPENAI_API_KEY ?? null,
     openaiBaseUrl: process.env.OPENAI_BASE_URL ?? DEFAULT_API_SETTINGS.openaiBaseUrl,
     openaiModel: process.env.OPENAI_MODEL ?? "",
+    openaiApiFormat: apiFormat as OpenAIApiFormat,
   });
   const store = new FileKVStore(STATE_PATH);
 

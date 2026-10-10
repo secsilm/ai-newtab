@@ -35,12 +35,15 @@ test("providers without model listing can test a manually entered model", async 
     if (++calls === 1) return new Response("", { status: 404 });
     expect(url).toBe("https://gateway.example/v1/chat/completions");
     expect(init.method).toBe("POST");
-    expect(JSON.parse(String(init.body))).toEqual({ model: "custom/model", messages: [{ role: "user", content: "Reply with OK." }], stream: false });
-    return Response.json({ choices: [{ message: { content: "OK" } }] });
+    const body = JSON.parse(String(init.body));
+    expect(body.model).toBe("custom/model");
+    expect(body.tools[0].function.name).toBe("connectionCheck");
+    expect(body.messages).toHaveLength(1);
+    return Response.json({ choices: [{ message: { tool_calls: [{ id: "check", function: { name: "connectionCheck", arguments: "{}" } }] } }] });
   }));
   expect(result.ok).toBe(true);
   expect(result.models).toEqual([]);
-  expect(result.message).toContain("Model request succeeded");
+  expect(result.message).toContain("tool calling succeeded");
 });
 
 test("missing model list without a manual model does not fake a successful test", async () => {
@@ -87,4 +90,28 @@ test("invalid URL/key never sends requests", async () => {
     }))).ok).toBe(false);
     expect(called).toBe(false);
   }
+});
+
+test("selected GPT-6 model tests Responses tool calling and retains the full list", async () => {
+  let calls = 0;
+  const result = await testOpenAIConnection({ ...input, model: "gpt-6.1-sol" }, transport((url, init) => {
+    if (++calls === 1) return Response.json({ data: [{ id: "gpt-6.1-sol" }] });
+    expect(url).toBe("https://gateway.example/v1/responses");
+    const body = JSON.parse(String(init.body));
+    expect(body.store).toBe(false);
+    expect(body.tools[0].name).toBe("connectionCheck");
+    return Response.json({ status: "completed", output: [{ type: "function_call", call_id: "call_check", name: "connectionCheck", arguments: "{}" }] });
+  }));
+  expect(result.ok).toBe(true);
+  expect(result.models).toEqual(["gpt-6.1-sol"]);
+  expect(result.message).toContain("Responses tool calling succeeded");
+});
+
+test("a working model list does not mask generation/tool incompatibility", async () => {
+  let calls = 0;
+  const result = await testOpenAIConnection({ ...input, model: "custom/model" }, transport(() =>
+    ++calls === 1 ? Response.json({ data: [{ id: "custom/model" }] }) : Response.json({ choices: [{ message: { content: "OK" } }] })));
+  expect(result.ok).toBe(false);
+  expect(result.models).toEqual(["custom/model"]);
+  expect(result.message).toContain("no test tool call");
 });

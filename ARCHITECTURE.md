@@ -70,14 +70,20 @@ The Anthropic managed-session path remains the default. `api-config.ts` validate
 and normalizes a provider configuration, and `api-runner.ts` routes builds to
 either the existing orchestrator or `openai-orchestrator.ts`.
 
-Compatible builds send non-streaming JSON Chat Completions requests to a configured
-API root plus `/chat/completions`, with function schemas for the browser tools and
+Compatible builds send non-streaming JSON requests to a configured API root plus
+`/chat/completions` or `/responses`, with function schemas for the browser tools and
 local `read`, `grep`, `glob`, `write`. No vendor-specific sampling, output-token or
 reasoning settings are sent. Assistant tool calls are saved before execution;
 each correlated tool result and virtual file change is then checkpointed together.
 On resume, only unanswered calls are executed. A browser scrape interrupted before
 its result was saved may be repeated. Provider `reasoning_content` is preserved
 when returned so compatible reasoning endpoints can continue tool turns.
+Responses builds use flat function schemas with `strict: false` and `store: false`.
+They replay all output items, including encrypted reasoning, and correlate tool
+results with `call_id`. The protocol is pinned in the local checkpoint. Auto picks
+Responses for GPT-6 model IDs; Settings can override this for gateway aliases.
+The connection test lists models and, when a model is selected, makes a synthetic
+function call under the same protocol. It sends no history and times out at 60 seconds.
 
 The virtual filesystem is a plain local data structure with no shell or OS access.
 Reads are capped and paginated; grep is a literal case-insensitive search. Only
@@ -96,7 +102,8 @@ rebuild schedule serve both providers.
 ```
 packages/agent-core/      host-agnostic agent loop — imports no chrome.*, browser.*, or node:*
   orchestrator.ts         runHomepageBuild: session lifecycle, event loop, tool dispatch, cleanup
-  openai-orchestrator.ts  local tool loop and checkpoints for Chat Completions APIs
+  openai-orchestrator.ts  local tool loop and checkpoints for compatible APIs
+  openai-protocol.ts      Responses input/output and safe protocol error hints
   api-config.ts          provider configuration, URL normalization and validation
   api-runner.ts          routes a configured build to the appropriate provider
   setup.ts                ensureAgent / ensureEnvironment (created once, cached by ID)

@@ -37,11 +37,30 @@ export default function PersonalizedHomepage() {
 }`;
 const requests: any[] = [];
 const modelRequests: string[] = [];
+const responseRequests: any[] = [];
 let mockError = "";
 const mockApi = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
   async fetch(request) {
+    if (request.method === "POST" && new URL(request.url).pathname === "/v1/responses") {
+      const body: any = await request.json();
+      if (body.model !== "gpt-6.1-sol" || body.store !== false || request.headers.get("Authorization") !== "Bearer test-compatible-key") mockError = "Wrong Responses configuration";
+      let name = "connectionCheck";
+      let args: object = {};
+      if (body.tools[0].name !== "connectionCheck") {
+        responseRequests.push(body);
+        name = responseRequests.length === 1 ? "getHistory" : "write";
+        if (name === "write") {
+          if (body.input.at(-1).call_id !== "call_getHistory" || !body.input.some((i: any) => i.encrypted_content === "test-reasoning")) mockError = "Responses lost reasoning or tool correlation";
+          args = { path: "/mnt/session/outputs/homepage.tsx", content: MOCK_CODE };
+        }
+      }
+      return Response.json({ status: "completed", output: [
+        { type: "reasoning", id: `rs_${name}`, summary: [], encrypted_content: "test-reasoning" },
+        { type: "function_call", id: `fc_${name}`, call_id: `call_${name}`, name, arguments: JSON.stringify(args), status: "completed" },
+      ] });
+    }
     if (request.method === "GET" && new URL(request.url).pathname === "/v1/models") {
       modelRequests.push(request.url);
       if (request.headers.get("Authorization") !== "Bearer test-compatible-key") return new Response("", { status: 401 });
@@ -373,12 +392,48 @@ try {
 
   await clickButton("⚙️ Settings");
   check("saved compatible model is shown when reopening Settings", await page.evaluate<boolean>(`document.querySelector('input[placeholder="Exact model ID from your provider"]').value === 'test/custom-model'`));
+  await page.evaluate(`(() => {
+    const input = document.querySelector('input[placeholder="Exact model ID from your provider"]');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'gpt-6.1-sol');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await sleep(100);
+  check("GPT-6 model selects Responses automatically", await page.evaluate<boolean>(`[...document.querySelectorAll('select')].some((s) => s.value === 'auto' && s.options[0].text.includes('Responses'))`));
+  await clickButton("Test connection");
+  for (let i = 0; i < 40; i++) {
+    if (await page.evaluate<boolean>(`!!document.querySelector('[role=status]')`)) break;
+    await sleep(100);
+  }
+  check("selected model tests Responses tool calling", await page.evaluate<boolean>(`document.querySelector('[role=status]')?.textContent.includes('Responses tool calling succeeded')`));
+  await page.evaluate(`(() => {
+    const select = document.querySelector('select[aria-label="Available models"]');
+    select.value = 'test/custom-model'; select.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await sleep(100);
+  check("changing the model clears tool-test success and retains the model list", await page.evaluate<boolean>(`document.querySelector('[role=status]')?.textContent.includes('Model selection changed') && document.querySelector('select[aria-label="Available models"]')?.options.length === 3`));
+  await page.evaluate(`(() => {
+    const select = document.querySelector('select[aria-label="Available models"]');
+    select.value = ''; select.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await sleep(100);
+  await page.evaluate(`(() => {
+    const input = document.querySelector('input[placeholder="Exact model ID from your provider"]');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'gpt-6.1-sol');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await sleep(100);
   const screenshot = process.env.EXTENSION_SCREENSHOT_PATH;
   if (screenshot) {
     const captured = await page.send("Page.captureScreenshot", { format: "png" });
     if (captured.result?.data) await Bun.write(screenshot, Buffer.from(captured.result.data, "base64"));
   }
-  await clickButton("Cancel");
+  await clickButton("Save & rebuild");
+  for (let i = 0; i < 40; i++) {
+    await sleep(100);
+    stored = await page.evaluate("chrome.storage.local.get(null)");
+    if (responseRequests.length === 2 && !stored.activeSessionId && stored.buildSnapshot?.phase === "done") break;
+  }
+  check("GPT-6 Responses build completes with reasoning and tool results preserved", responseRequests.length === 2 && !mockError && stored.openaiModel === "gpt-6.1-sol" && stored.homepageData?.code === MOCK_CODE, mockError);
 
   page.close();
   browser.close();

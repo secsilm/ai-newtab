@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_API_SETTINGS, DEFAULT_MODEL, OPENAI_CHECKPOINT_KEY, OUTPUT_PATH, STORAGE_KEYS,
-  getApiConfiguration, hasApiConfiguration, normalizeOpenAIBaseUrl, runOpenAIHomepageBuild,
+  getApiConfiguration, hasApiConfiguration, normalizeOpenAIBaseUrl, resolveOpenAIApiFormat, runOpenAIHomepageBuild,
   type BrowserBridge, type KVStore, type OpenAIRunOptions,
 } from "@homepage/agent-core";
 import { fixtureHistory } from "./node-bridge";
@@ -60,6 +60,60 @@ describe("API configuration", () => {
       expect(() => normalizeOpenAIBaseUrl(url)).toThrow();
     }
   });
+});
+
+test("GPT-6 models default to Responses; explicit protocol overrides remain available", () => {
+  expect(resolveOpenAIApiFormat("gpt-6.1-sol")).toBe("responses");
+  expect(resolveOpenAIApiFormat("vendor/gpt-6-astra")).toBe("responses");
+  expect(resolveOpenAIApiFormat("custom/model")).toBe("chat-completions");
+  expect(resolveOpenAIApiFormat("gpt-6.1-sol", "chat-completions")).toBe("chat-completions");
+  expect(normalizeOpenAIBaseUrl("https://gateway.example/v1/responses")).toBe("https://gateway.example/v1");
+});
+
+test("Responses runs local tools and resumes with encrypted reasoning and correlated call IDs", async () => {
+  const store = new MemoryStore();
+  const reasoning = { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "encrypted-test-state" };
+  const responseCall = (name: string, args: unknown) => Response.json({ status: "completed", output: [reasoning,
+    { type: "function_call", id: `fc_${name}`, call_id: `call_${name}`, name, arguments: JSON.stringify(args), status: "completed" },
+  ] });
+  let turn = 0;
+  const opts = options((body, _init, url) => {
+    expect(url).toBe("https://gateway.example/custom/v1/responses");
+    expect(body.store).toBe(false);
+    expect(body.messages).toBeUndefined();
+    expect(body.tools.every((t: any) => t.type === "function" && t.strict === false && !t.function)).toBe(true);
+    if (++turn === 1) return responseCall("getHistory", {});
+    expect(body.input).toContainEqual(reasoning);
+    const output = body.input.at(-1);
+    expect(output.type).toBe("function_call_output");
+    if (turn === 2) {
+      expect(output.call_id).toBe("call_getHistory");
+      return responseCall("getPageHtml", { urls: ["https://example.com"] });
+    }
+    if (turn === 3) return responseCall("read", { path: JSON.parse(output.output).pages[0].mountPath });
+    expect(JSON.parse(output.output).content).toBe(PAGE);
+    return responseCall("write", { path: OUTPUT_PATH, content: CODE });
+  }, store);
+  opts.model = "gpt-6.1-sol";
+  expect((await runOpenAIHomepageBuild(opts)).code).toBe(CODE);
+  const checkpoint = store.checkpoints.find((c) => c.messages.at(-1).response_items);
+  const resumed = new MemoryStore();
+  await resumed.set(OPENAI_CHECKPOINT_KEY, checkpoint);
+  const resumedOpts = options((body) => {
+    expect(body.input).toContainEqual(reasoning);
+    expect(body.input.at(-1).call_id).toBe("call_getHistory");
+    return responseCall("write", { path: OUTPUT_PATH, content: CODE });
+  }, resumed);
+  resumedOpts.model = "gpt-6.1-sol";
+  resumedOpts.resumeSessionId = checkpoint.sessionId;
+  expect((await runOpenAIHomepageBuild(resumedOpts)).code).toBe(CODE);
+  expect(resumed.data.size).toBe(0);
+});
+
+test("HTTP 400 gives a safe protocol-specific hint without echoing provider secrets", async () => {
+  await expect(runOpenAIHomepageBuild(options(() => Response.json({ error: {
+    message: "secret-key: this model requires Responses for tool calling", param: "tools",
+  } }, { status: 400 })))).rejects.toThrow("Select Responses in Settings");
 });
 
 describe("OpenAI-compatible build", () => {

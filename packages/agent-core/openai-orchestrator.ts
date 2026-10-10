@@ -1,4 +1,5 @@
-import { normalizeOpenAIBaseUrl } from "./api-config";
+import { normalizeOpenAIBaseUrl, resolveOpenAIApiFormat, type OpenAIApiFormat } from "./api-config";
+import { apiFailure, parseResponsesMessage, responsesInput, type CompatibleMessage as Message } from "./openai-protocol";
 import { buildHistoryDigest, slugifyUrl } from "./history-digest";
 import { HOMEPAGE_SYSTEM_PROMPT, OUTPUT_PATH, buildKickoffMessage } from "./prompt";
 import { DEFAULTS, GET_HISTORY_SCHEMA, GET_PAGE_HTML_SCHEMA, type ToolInputSchema } from "./schemas";
@@ -12,23 +13,11 @@ const MAX_FILE_CHARS = 2_000_000;
 const MAX_TOOL_CHARS = 16_000;
 const CODE_FENCE = /```(?:tsx|jsx|ts|js|typescript|javascript)?\s*\n([\s\S]*?)```/;
 
-interface ToolCall {
-  id: string;
-  type: "function";
-  function: { name: string; arguments: string };
-}
-interface Message {
-  role: "system" | "user" | "assistant" | "tool";
-  content: string | null;
-  tool_calls?: ToolCall[];
-  tool_call_id?: string;
-  /** Some compatible reasoning providers require this on subsequent turns. */
-  reasoning_content?: string;
-}
 interface Checkpoint {
   sessionId: string;
   baseUrl: string;
   model: string;
+  apiFormat?: Exclude<OpenAIApiFormat, "auto">;
   messages: Message[];
   files: Record<string, string>;
   turns: number;
@@ -61,6 +50,7 @@ export interface OpenAIRunOptions {
   apiKey: string;
   baseUrl: string;
   model: string;
+  apiFormat?: OpenAIApiFormat;
   bridge: BrowserBridge;
   store: KVStore;
   userSystemPrompt?: string;
@@ -72,9 +62,10 @@ export interface OpenAIRunOptions {
   fetch?: typeof fetch;
 }
 
-/** Chat Completions + host-side tools; no cloud filesystem or code execution. */
+/** Compatible APIs + host-side tools; no cloud filesystem or code execution. */
 export async function runOpenAIHomepageBuild(opts: OpenAIRunOptions): Promise<HomepageBuildResult> {
   const baseUrl = normalizeOpenAIBaseUrl(opts.baseUrl);
+  const apiFormat = resolveOpenAIApiFormat(opts.model, opts.apiFormat);
   if (!opts.apiKey.trim() || !opts.model.trim()) throw new Error("API key and model ID are required.");
   const { callbacks, signal, store } = opts;
   callbacks?.onPhase?.("setup");
@@ -84,14 +75,14 @@ export async function runOpenAIHomepageBuild(opts: OpenAIRunOptions): Promise<Ho
     if (!cached || cached.sessionId !== opts.resumeSessionId) {
       throw new Error("Interrupted compatible build has no checkpoint. Start a new build.");
     }
-    if (cached.baseUrl !== baseUrl || cached.model !== opts.model) {
-      throw new Error("Resume with the same Base URL and model used by the interrupted build.");
+    if (cached.baseUrl !== baseUrl || cached.model !== opts.model || (cached.apiFormat && cached.apiFormat !== apiFormat)) {
+      throw new Error("Resume with the same Base URL, model and API protocol used by the interrupted build.");
     }
     state = cached;
   } else {
     callbacks?.onPhase?.("session-create");
     state = {
-      sessionId: `openai-${crypto.randomUUID()}`, baseUrl, model: opts.model,
+      sessionId: `openai-${crypto.randomUUID()}`, baseUrl, model: opts.model, apiFormat,
       messages: [
         { role: "system", content: HOMEPAGE_SYSTEM_PROMPT + "\n\nYour files are stored locally by the host. Use only the provided tools; no shell is available. The read tool uses character offsets, and grep searches literal strings." },
         { role: "user", content: buildKickoffMessage({ now: opts.now ?? new Date(), userSystemPrompt: opts.userSystemPrompt }) },
@@ -105,7 +96,7 @@ export async function runOpenAIHomepageBuild(opts: OpenAIRunOptions): Promise<Ho
   try {
     await persist();
     await store.set(STORAGE_KEYS.activeSessionId, state.sessionId);
-    callbacks?.onLog?.(`provider=openai-compatible model=${state.model}`);
+    callbacks?.onLog?.(`provider=openai-compatible protocol=${apiFormat} model=${state.model}`);
     while (true) {
       checkAbort();
       // A saved assistant tool-call message may have only some results. Finish
@@ -154,24 +145,27 @@ export async function runOpenAIHomepageBuild(opts: OpenAIRunOptions): Promise<Ho
       const requestSignal = signal
         ? AbortSignal.any([signal, AbortSignal.timeout(180_000)])
         : AbortSignal.timeout(180_000);
-      const response = await (opts.fetch ?? fetch)(`${baseUrl}/chat/completions`, {
+      const payload = apiFormat === "responses"
+        ? { model: state.model, input: responsesInput(state.messages), tools: TOOLS.map(({ function: fn }) => ({ type: "function", ...fn, strict: false })), stream: false, store: false }
+        : { model: state.model, messages: state.messages, tools: TOOLS, stream: false };
+      const response = await (opts.fetch ?? fetch)(`${baseUrl}/${apiFormat === "responses" ? "responses" : "chat/completions"}`, {
         method: "POST", redirect: "error", signal: requestSignal,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.apiKey.trim()}` },
-        body: JSON.stringify({ model: state.model, messages: state.messages, tools: TOOLS, stream: false }),
+        body: JSON.stringify(payload),
       });
       if (!response.ok) {
-        // Never expose response bodies: a gateway can echo credentials or page
-        // content, and the worker may display errors in desktop notifications.
-        throw new Error(`OpenAI-compatible API returned HTTP ${response.status}. Check Base URL, API key, model and provider limits.`);
+        throw await apiFailure(response, apiFormat);
       }
       const body = await response.json() as {
         choices?: Array<{ finish_reason?: string; message?: Message & { refusal?: string } }>;
         error?: unknown;
+        status?: string;
+        output?: Record<string, unknown>[];
       };
       const choice = body.choices?.[0];
       if (choice?.finish_reason === "length") throw new Error("Model output was truncated. Choose a model/provider with a larger output limit.");
       if (choice?.finish_reason === "content_filter" || choice?.message?.refusal) throw new Error("The provider declined this build.");
-      const message = choice?.message;
+      const message = apiFormat === "responses" ? parseResponsesMessage(body) : choice?.message;
       if (body.error || !message || (message.content != null && typeof message.content !== "string")) {
         throw new Error("Invalid Chat Completions response from the provider.");
       }
@@ -185,6 +179,7 @@ export async function runOpenAIHomepageBuild(opts: OpenAIRunOptions): Promise<Ho
       const saved: Message = { role: "assistant", content: message.content ?? null };
       if (calls?.length) saved.tool_calls = calls;
       if (typeof message.reasoning_content === "string") saved.reasoning_content = message.reasoning_content;
+      if (message.response_items) saved.response_items = message.response_items;
       state.messages.push(saved);
       state.turns++;
       await persist();

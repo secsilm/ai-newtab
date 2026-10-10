@@ -30,7 +30,7 @@ terminal, a zine.
 
 You need Chrome (or another Chromium browser), [Node.js](https://nodejs.org) 20+,
 and an [Anthropic API key](https://console.anthropic.com) or an OpenAI-compatible
-API endpoint and key with a model that supports Chat Completions function calling.
+API endpoint and key with a model that supports function calling.
 
 ```bash
 git clone https://github.com/ThariqS/ai-newtab.git
@@ -93,15 +93,19 @@ and load the provider's model list into a dropdown. Paginated lists are fetched
 in full when the provider uses `has_more`/`after` pagination. You can also select
 **Enter a model ID manually**. If the provider does
 not support model listing, enter a model ID and test again: the extension sends
-a short synthetic Chat Completions request. No browsing data is sent by the test.
-The status distinguishes model-list access from a successful model request;
-neither test guarantees function-calling support. Tests time out after 20 seconds.
+a short synthetic tool request. No browsing data is sent by the test. Once a model
+is selected, testing also verifies function calling using the chosen protocol,
+even when model listing succeeds. Tests time out after 60 seconds.
 Local HTTP endpoints such as `http://localhost:1234/v1` work too. For a local API
 without authentication, enter a placeholder key such as `local`.
 
-The endpoint must accept `POST /chat/completions`, JSON responses and `tools`
-function calling with correlated `tool` messages. Responses-only models/endpoints
-are not supported by this adapter. Reading history, scraping pages, analyzing
+**API protocol.** Auto uses Responses (`POST /responses`) for GPT-6 model IDs,
+including `gpt-6.1-sol`, and Chat Completions (`POST /chat/completions`) for other
+models. You can explicitly choose either protocol for provider-specific aliases.
+GPT-6.1 Sol requires Responses for tool calling, as described in the
+[official model documentation](https://developers.openai.com/api/docs/models/gpt-6.1-sol).
+The endpoint must support JSON responses and function calling under that protocol.
+Reading history, scraping pages, analyzing
 files and writing the homepage all run through the same browser tools. Compatible
 builds are bounded to 40 model turns and 8 distinct pages. Individual API requests
 time out after 3 minutes; errors appear in the build view.
@@ -125,7 +129,7 @@ failed build until the next interval, so it never loops.
 ## Good to know
 
 - **Cost.** Builds are billed by your selected provider: a managed session for
-  Anthropic, or multiple Chat Completions requests for compatible APIs. Cost
+  Anthropic, or multiple model requests for compatible APIs. Cost
   depends on the model and how much it reads. Turn off automatic rebuilds to
   build only when you ask.
 - **What it can see.** It ranks the sites in your history and opens up to 8 of

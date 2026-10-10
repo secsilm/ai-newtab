@@ -23,6 +23,7 @@ export const KEYS = {
   openaiApiKey: "openaiApiKey",
   openaiBaseUrl: "openaiBaseUrl",
   openaiModel: "openaiModel",
+  openaiApiFormat: "openaiApiFormat",
   /** Pins provider, endpoint, model and credentials while a build is in flight. */
   activeBuildConfig: "activeBuildConfig",
   autoRebuild: "autoRebuild",
@@ -70,6 +71,7 @@ export async function loadSettings(): Promise<Settings> {
     KEYS.openaiApiKey,
     KEYS.openaiBaseUrl,
     KEYS.openaiModel,
+    KEYS.openaiApiFormat,
     KEYS.autoRebuild,
     KEYS.rebuildIntervalHours,
   ]);
@@ -84,6 +86,7 @@ export async function loadSettings(): Promise<Settings> {
     openaiApiKey: (s[KEYS.openaiApiKey] as string | undefined) ?? null,
     openaiBaseUrl: (s[KEYS.openaiBaseUrl] as string | undefined) ?? DEFAULT_API_SETTINGS.openaiBaseUrl,
     openaiModel: (s[KEYS.openaiModel] as string | undefined) ?? "",
+    openaiApiFormat: s[KEYS.openaiApiFormat] === "responses" ? "responses" : s[KEYS.openaiApiFormat] === "chat-completions" ? "chat-completions" : "auto",
     autoRebuild: s[KEYS.autoRebuild] !== false,
     rebuildIntervalHours: (s[KEYS.rebuildIntervalHours] as number | undefined) ?? null,
   };
@@ -99,6 +102,7 @@ export async function saveApiSettings(settings: ApiSettings): Promise<void> {
     [KEYS.openaiApiKey]: settings.openaiApiKey?.trim() || null,
     [KEYS.openaiBaseUrl]: config.provider === "openai-compatible" ? config.baseUrl : settings.openaiBaseUrl,
     [KEYS.openaiModel]: settings.openaiModel.trim(),
+    [KEYS.openaiApiFormat]: settings.openaiApiFormat ?? "auto",
   });
 }
 

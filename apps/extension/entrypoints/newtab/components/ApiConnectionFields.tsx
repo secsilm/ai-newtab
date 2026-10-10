@@ -1,4 +1,4 @@
-import { MODEL_CHOICES, normalizeOpenAIBaseUrl, type ConnectionTestResult, type ApiProvider, type ApiSettings, type HomepageModel } from "@homepage/agent-core";
+import { MODEL_CHOICES, normalizeOpenAIBaseUrl, resolveOpenAIApiFormat, type OpenAIApiFormat, type ConnectionTestResult, type ApiProvider, type ApiSettings, type HomepageModel } from "@homepage/agent-core";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { ConnectionTestMessage } from "@/lib/protocol";
 import { btn } from "./ui";
@@ -22,7 +22,7 @@ export function ApiConnectionFields({ value, onChange }: {
     setTesting(false);
     setManual(false);
     return () => { requestId.current++; };
-  }, [value.provider, value.openaiBaseUrl, value.openaiApiKey]);
+  }, [value.provider, value.openaiBaseUrl, value.openaiApiKey, value.openaiApiFormat]);
 
   const models = result?.models ?? [];
   const showManual = manual || !models.includes(value.openaiModel);
@@ -38,11 +38,13 @@ export function ApiConnectionFields({ value, onChange }: {
       const reply: ConnectionTestResult = await browser.runtime.sendMessage({
         kind: "testApiConnection", baseUrl: settings.openaiBaseUrl,
         apiKey: settings.openaiApiKey ?? "", model: settings.openaiModel,
+        apiFormat: settings.openaiApiFormat ?? "auto",
       } satisfies ConnectionTestMessage);
       if (id === requestId.current && latest.current.provider === settings.provider &&
-        latest.current.openaiBaseUrl === settings.openaiBaseUrl && latest.current.openaiApiKey === settings.openaiApiKey &&
-        (reply?.models.length || latest.current.openaiModel === settings.openaiModel)) {
-        setResult(reply ?? { ok: false, models: [], message: "Connection test could not reach the extension worker. Try again." });
+        latest.current.openaiBaseUrl === settings.openaiBaseUrl && latest.current.openaiApiKey === settings.openaiApiKey) {
+        setResult(latest.current.openaiModel !== settings.openaiModel
+          ? modelChangedResult(reply?.models ?? [])
+          : reply ?? { ok: false, models: [], message: "Connection test could not reach the extension worker. Try again." });
       }
     } catch {
       if (id === requestId.current) setResult({ ok: false, models: [], message: "Connection test failed. Try again." });
@@ -52,7 +54,7 @@ export function ApiConnectionFields({ value, onChange }: {
   }
 
   function change<K extends keyof ApiSettings>(key: K, next: ApiSettings[K]) {
-    if (key === "openaiModel" && result && !result.models.length) setResult(null);
+    if (key === "openaiModel" && next !== value.openaiModel && result) setResult(modelChangedResult(result.models));
     onChange({ ...value, [key]: next });
   }
   return (
@@ -111,9 +113,18 @@ export function ApiConnectionFields({ value, onChange }: {
             {(models.length === 0 || showManual) && <input style={field} value={value.openaiModel}
               onChange={(e) => change("openaiModel", e.target.value)} placeholder="Exact model ID from your provider" />}
           </label>
+          <label style={label}>
+            API protocol
+            <select style={field} value={value.openaiApiFormat ?? "auto"}
+              onChange={(e) => change("openaiApiFormat", e.target.value as OpenAIApiFormat)}>
+              <option value="auto">Auto ({resolveOpenAIApiFormat(value.openaiModel, "auto") === "responses" ? "Responses" : "Chat Completions"})</option>
+              <option value="responses">Responses</option>
+              <option value="chat-completions">Chat Completions</option>
+            </select>
+          </label>
           <p style={{ color: "#666", fontSize: 12, lineHeight: 1.5 }}>
-            Use the API root including its version path (for example /v1), or the full /chat/completions URL.
-            The model must support Chat Completions function calling. For local services without authentication,
+            Use the API root including its version path (for example /v1), or the full /responses or /chat/completions URL.
+            GPT-6 models use Responses in Auto mode. The provider must support the selected protocol and function calling. For local services without authentication,
             enter a placeholder key such as local.
           </p>
         </>
@@ -124,4 +135,8 @@ export function ApiConnectionFields({ value, onChange }: {
       </p>
     </fieldset>
   );
+}
+
+function modelChangedResult(models: string[]): ConnectionTestResult {
+  return { ok: false, models, message: "Model selection changed. Test again to verify tool calling for this model." };
 }

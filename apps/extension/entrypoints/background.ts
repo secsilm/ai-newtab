@@ -19,11 +19,13 @@ export default defineBackground(() => {
 
   browser.runtime.onMessage.addListener((message, sender) => {
     if (message?.kind !== "testApiConnection" || sender.id !== browser.runtime.id) return;
-    if (typeof message.baseUrl !== "string" || typeof message.apiKey !== "string" ||
+    if ((message.apiFormat !== undefined && !["auto", "chat-completions", "responses"].includes(message.apiFormat)) || typeof message.baseUrl !== "string" || typeof message.apiKey !== "string" ||
       (message.model !== undefined && typeof message.model !== "string")) {
       return Promise.resolve({ ok: false, models: [], message: "Invalid connection settings." });
     }
-    return testOpenAIConnection({ baseUrl: message.baseUrl, apiKey: message.apiKey, model: message.model });
+    const keepalive = setInterval(() => void browser.runtime.getPlatformInfo(), 20_000);
+    return testOpenAIConnection({ baseUrl: message.baseUrl, apiKey: message.apiKey, model: message.model, apiFormat: message.apiFormat })
+      .finally(() => clearInterval(keepalive));
   });
 
   browser.runtime.onConnect.addListener((port) => {
