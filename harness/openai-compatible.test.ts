@@ -16,7 +16,7 @@ export default function PersonalizedHomepage() {
 }`;
 const PAGE = '<a href="https://example.com/story">A real headline</a>';
 const bridge: BrowserBridge = {
-  async getHistory() { return { sites: fixtureHistory(), totalSitesSeen: 12 }; },
+  async getHistory() { return { sites: fixtureHistory(), totalSitesSeen: fixtureHistory().length }; },
   async getPageHtml({ urls }) {
     return { pages: [{ url: urls[0], title: "Example", html: PAGE }], failed: [{ url: "https://offline.example", reason: "timeout" }] };
   },
@@ -162,7 +162,8 @@ describe("OpenAI-compatible build", () => {
       if (step++ === 0) return reply("Reading history", [call("history", "getHistory", {})], { reasoning_content: "provider-specific reasoning" });
       const toolResult = JSON.parse(body.messages.at(-1).content);
       if (step === 2) {
-        expect(toolResult.totalSitesSeen).toBe(12);
+        expect(toolResult.totalSitesSeen).toBe(fixtureHistory().length - 1);
+        expect(JSON.stringify(toolResult)).not.toContain("mail.google.com");
         expect(body.messages.find((m: any) => m.role === "assistant").reasoning_content).toBe("provider-specific reasoning");
         return reply(null, [call("scrape", "getPageHtml", { urls: ["https://example.com"] })]);
       }
@@ -236,7 +237,10 @@ describe("OpenAI-compatible build", () => {
       ]);
       const results = body.messages.filter((m: any) => m.role === "tool");
       expect(results).toHaveLength(7);
-      expect(results.every((m: any) => JSON.parse(m.content).error)).toBe(true);
+      expect(results.filter((m: any) => m.tool_call_id !== "url").every((m: any) => JSON.parse(m.content).error)).toBe(true);
+      expect(JSON.parse(results.find((m: any) => m.tool_call_id === "url").content)).toEqual({
+        pages: [], failed: [{ url: "file:///etc/passwd", reason: "blocked by the user's settings" }],
+      });
       return reply(null, [call("ok", "write", { path: OUTPUT_PATH, content: CODE })]);
     }));
     expect(result.code).toBe(CODE);
@@ -289,3 +293,93 @@ describe("OpenAI-compatible build", () => {
     expect(store.data.size).toBe(0);
   });
 });
+
+for (const apiFormat of ["chat-completions", "responses"] as const) {
+  const toolReply = (name: string, args: unknown) => apiFormat === "responses"
+    ? Response.json({ status: "completed", output: [{ type: "function_call", call_id: name, name, arguments: JSON.stringify(args) }] })
+    : reply(null, [call(name, name, args)]);
+  const resultOf = (body: any) => JSON.parse(apiFormat === "responses" ? body.input.at(-1).output : body.messages.at(-1).content);
+
+  test(`${apiFormat} filters history and blocks private, redirected and listed pages before mounting`, async () => {
+    const calls: string[][] = [];
+    const urls = ["https://bank.test", "http://127.0.0.1", "file:///secret", "not a url", "https://redirect.test", "https://router.test", "https://public.test"];
+    const store = new MemoryStore();
+    let turn = 0;
+    const opts = options((body) => {
+      switch (++turn) {
+        case 1: return toolReply("getHistory", { maxResults: 1 });
+        case 2: {
+          const digest = resultOf(body);
+          expect(digest.totalSitesSeen).toBe(fixtureHistory().length - 1);
+          expect(digest.sites).toHaveLength(1);
+          expect(JSON.stringify(digest)).not.toContain("news.ycombinator.com");
+          return toolReply("getPageHtml", { urls });
+        }
+        default: {
+          const result = resultOf(body);
+          expect(result.pages.map((p: any) => p.url)).toEqual(["https://public.test"]);
+          expect(result.failed.map((p: any) => p.url)).toEqual(urls.slice(0, -1));
+          expect(JSON.stringify(result)).not.toContain("secret-title");
+          expect(JSON.stringify(store.checkpoints.at(-1).files)).not.toContain("secret-body");
+          return toolReply("write", { path: OUTPUT_PATH, content: CODE });
+        }
+      }
+    }, store);
+    opts.apiFormat = apiFormat;
+    opts.blockedSites = ["bank.test", "news.ycombinator.com"];
+    opts.bridge = {
+      getHistory: async () => ({ sites: fixtureHistory(), totalSitesSeen: fixtureHistory().length }),
+      getPageHtml: async ({ urls }) => {
+        calls.push(urls);
+        return { pages: [
+          { url: urls[0], finalUrl: "https://bank.test/inbox", title: "secret-title", html: "secret-body" },
+          { url: urls[1], finalUrl: urls[1], ip: "192.168.1.1", title: "secret-title", html: "secret-body" },
+          { url: urls[2], finalUrl: urls[2], title: "News", html: PAGE },
+        ], failed: [] };
+      },
+    };
+    expect((await runOpenAIHomepageBuild(opts)).code).toBe(CODE);
+    expect(calls).toEqual([urls.slice(-3)]);
+  });
+
+  test(`${apiFormat} re-reads the blocklist for unanswered resumed calls and skips the browser`, async () => {
+    const store = new MemoryStore();
+    const opts = options((body) => {
+      const result = resultOf(body);
+      expect(result.pages).toEqual([]);
+      expect(result.failed).toHaveLength(2);
+      return toolReply("write", { path: OUTPUT_PATH, content: CODE });
+    }, store);
+    opts.apiFormat = apiFormat;
+    opts.resumeSessionId = "openai-blocked-resume";
+    opts.blockedSites = async () => ["bank.test"];
+    opts.bridge = { ...bridge, getPageHtml: async () => { throw new Error("Blocked calls must never reach the browser"); } };
+    await store.set(OPENAI_CHECKPOINT_KEY, {
+      sessionId: opts.resumeSessionId, baseUrl: normalizeOpenAIBaseUrl(opts.baseUrl), model: opts.model, apiFormat,
+      files: {}, turns: 1, scrapedUrls: [], messages: [{ role: "assistant", content: null,
+        tool_calls: [call("pages", "getPageHtml", { urls: ["https://bank.test", "http://localhost"] })] }],
+    });
+    expect((await runOpenAIHomepageBuild(opts)).code).toBe(CODE);
+    expect(store.checkpoints.at(-1).scrapedUrls).toEqual([]);
+  });
+
+  test(`${apiFormat} defaults to blocking webmail and accepts an explicitly empty list`, async () => {
+    for (const blockedSites of [undefined, []]) {
+      let turn = 0;
+      let scrapes = 0;
+      const opts = options((body) => {
+        if (++turn === 1) return toolReply("getPageHtml", { urls: ["https://mail.google.com"] });
+        expect(resultOf(body).pages).toHaveLength(blockedSites ? 1 : 0);
+        return toolReply("write", { path: OUTPUT_PATH, content: CODE });
+      });
+      opts.apiFormat = apiFormat;
+      opts.blockedSites = blockedSites;
+      opts.bridge = { ...bridge, getPageHtml: async ({ urls }) => {
+        scrapes++;
+        return { pages: [{ url: urls[0], title: "Mail", html: PAGE }], failed: [] };
+      } };
+      expect((await runOpenAIHomepageBuild(opts)).code).toBe(CODE);
+      expect(scrapes).toBe(blockedSites ? 1 : 0);
+    }
+  });
+}

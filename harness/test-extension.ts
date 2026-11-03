@@ -81,7 +81,7 @@ const mockApi = Bun.serve({
     let args: object;
     switch (requests.length) {
       case 1: name = "getHistory"; args = {}; break;
-      case 2: name = "getPageHtml"; args = { urls: [`http://127.0.0.1:${mockApi.port}/news`], loadDelayMs: 0 }; break;
+      case 2: name = "getPageHtml"; args = { urls: [`http://news.homepage.test:${mockApi.port}/news`], loadDelayMs: 0 }; break;
       case 3: {
         const result = JSON.parse(body.messages.at(-1).content);
         if (!result.pages?.length) {
@@ -115,6 +115,8 @@ const chrome = spawn(
     "--disable-gpu",
     "--no-first-run",
     "--no-default-browser-check",
+    "--no-proxy-server",
+    "--host-resolver-rules=MAP news.homepage.test 127.0.0.1",
     "--enable-unsafe-extension-debugging", // required for the CDP Extensions domain
     `--remote-debugging-port=${PORT}`,
     `--user-data-dir=${profile}`,
@@ -343,6 +345,13 @@ try {
     select.value = 'zh-CN'; select.dispatchEvent(new Event('change', { bubbles: true }));
   })()`);
   await sleep(100);
+  check("settings include the default blocked sites", await page.evaluate<boolean>(`document.querySelector('textarea[aria-describedby="blocked-sites-help"]').value.includes('mail.google.com')`));
+  await page.evaluate(`(() => {
+    const input = document.querySelector('textarea[aria-describedby="blocked-sites-help"]');
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, input.value + '\\nbank.test');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await sleep(100);
   await clickButton("Save & rebuild");
 
   let stored: any;
@@ -354,6 +363,7 @@ try {
   check("compatible settings are saved and URL normalized", stored.apiProvider === "openai-compatible" && stored.openaiBaseUrl === `http://127.0.0.1:${mockApi.port}/v1` && stored.openaiModel === "test/custom-model");
   check("switching provider preserves the Anthropic credential", stored.apiKey === "test-legacy-key");
   check("selected output language is saved and sent to the model", stored.outputLanguage === "zh-CN" && requests[0]?.messages.some((m: any) => m.role === "user" && m.content.includes("Simplified Chinese")));
+  check("edited blocked sites are saved with compatible settings", stored.blockedSites?.includes("bank.test"));
   check("worker completes history, browser scrape, local read and homepage write", stored.homepageData?.code === MOCK_CODE && requests.length === 4 && !mockError, mockError || stored.buildSnapshot?.error || `${requests.length} local API requests`);
   // Cleanup may follow the done broadcast by a few storage operations.
   await sleep(300);
@@ -386,6 +396,17 @@ try {
 
   // ---- 8. automatic rebuild uses compatible credentials without an Anthropic key
   requests.length = 0;
+  const worker = await cdp(sw.webSocketDebuggerUrl);
+  // Only this isolated worker uses a fixed morning; the host clock is untouched.
+  await worker.evaluate(`(() => {
+    globalThis.RealDate = Date;
+    const morning = new Date(); morning.setHours(8, 0, 0, 0);
+    globalThis.Date = class extends RealDate {
+      constructor(...args) { super(...(args.length ? args : [morning.getTime()])); }
+      static now() { return morning.getTime(); }
+    };
+  })()`);
+  await page.evaluate("chrome.storage.local.remove('lastAutoBuildAttempt')");
   await page.evaluate(`chrome.storage.local.set(${JSON.stringify({
     apiProvider: "openai-compatible", openaiApiKey: "test-compatible-key", openaiModel: "test/custom-model",
     autoRebuild: true, homepageData: { code: MOCK_CODE, timestamp: "2000-01-01T00:00:00Z" },
@@ -394,15 +415,18 @@ try {
   for (let i = 0; i < 80; i++) {
     await sleep(250);
     stored = await page.evaluate("chrome.storage.local.get(null)");
-    if (stored.lastAutoBuildAttempt && stored.buildSnapshot?.phase === "done") break;
+    if (stored.lastAutoBuildAttempt && stored.homepageData?.timestamp !== "2000-01-01T00:00:00Z" && stored.buildSnapshot?.phase === "done" && !stored.activeSessionId) break;
   }
-  check("heartbeat rebuilds using only compatible credentials", Boolean(stored.lastAutoBuildAttempt) && stored.homepageData?.timestamp !== "2000-01-01T00:00:00Z" && requests.length === 4 && !mockError, mockError || `${requests.length} local API requests`);
+  check("heartbeat rebuilds using only compatible credentials", Boolean(stored.lastAutoBuildAttempt) && stored.homepageData?.timestamp !== "2000-01-01T00:00:00Z" && requests.length === 4 && !mockError, mockError || stored.buildSnapshot?.error || `${requests.length} local API requests`);
   check("automatic rebuild uses the saved output language", requests[0]?.messages.some((m: any) => m.role === "user" && m.content.includes("Simplified Chinese")));
   await page.evaluate("chrome.storage.local.set({ autoRebuild: false })");
+  await worker.evaluate("globalThis.Date = globalThis.RealDate");
+  worker.close();
 
   await clickButton("⚙️ Settings");
   check("saved compatible model is shown when reopening Settings", await page.evaluate<boolean>(`document.querySelector('input[placeholder="Exact model ID from your provider"]').value === 'test/custom-model'`));
   check("saved output language is shown when reopening Settings", await page.evaluate<boolean>(`document.querySelector('select[aria-label="Output language"]').value === 'zh-CN'`));
+  check("saved blocked sites are shown when reopening Settings", await page.evaluate<boolean>(`document.querySelector('textarea[aria-describedby="blocked-sites-help"]').value.includes('bank.test')`));
   await page.evaluate(`(() => {
     const input = document.querySelector('input[placeholder="Exact model ID from your provider"]');
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'gpt-6.1-sol');

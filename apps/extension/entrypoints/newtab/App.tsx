@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { DEFAULT_API_SETTINGS, hasApiConfiguration, type ApiSettings, type OutputLanguage } from "@homepage/agent-core";
-import { DEFAULT_REBUILD_INTERVAL_HOURS } from "@/lib/auto-rebuild";
+import { DEFAULT_API_SETTINGS, DEFAULT_BLOCKED_SITES, hasApiConfiguration, type ApiSettings, type OutputLanguage } from "@homepage/agent-core";
 import { BUILD_STEPS } from "@/lib/protocol";
 import { KEYS, extensionStore, loadHomepage, loadSettings, saveApiSettings, saveSetting } from "@/lib/storage";
 import { toRenderable } from "@/lib/transpile";
@@ -16,8 +15,8 @@ export default function App() {
   const [apiSettings, setApiSettings] = useState<ApiSettings>(DEFAULT_API_SETTINGS);
   const [systemPrompt, setSystemPrompt] = useState("");
   const [outputLanguage, setOutputLanguage] = useState<OutputLanguage>("auto");
+  const [blockedSites, setBlockedSites] = useState<string[]>(DEFAULT_BLOCKED_SITES);
   const [autoRebuild, setAutoRebuild] = useState(true);
-  const [intervalHours, setIntervalHours] = useState(DEFAULT_REBUILD_INTERVAL_HOURS);
   /** Transpiled homepage, ready for Sandpack. */
   const [renderedCode, setRenderedCode] = useState<string | null>(null);
   /** A session left mid-flight, offered as "Resume interrupted build". */
@@ -48,8 +47,8 @@ export default function App() {
         setApiSettings(settings);
         setSystemPrompt(settings.systemPrompt);
         setOutputLanguage(settings.outputLanguage);
+        setBlockedSites(settings.blockedSites);
         setAutoRebuild(settings.autoRebuild);
-        setIntervalHours(settings.rebuildIntervalHours ?? DEFAULT_REBUILD_INTERVAL_HOURS);
         setResumable(activeSession ?? null);
         if (homepage?.code) setRenderedCode(toRenderable(homepage.code));
       } finally {
@@ -64,10 +63,12 @@ export default function App() {
   }, []);
 
   const savePrompt = useCallback(
-    async (prompt: string, settings: ApiSettings, language: OutputLanguage) => {
+    async (prompt: string, settings: ApiSettings, language: OutputLanguage, sites: string[]) => {
       await saveApiSettings(settings);
       setApiSettings(settings);
       await saveSetting("systemPrompt", prompt);
+      await saveSetting("blockedSites", sites);
+      setBlockedSites(sites);
       setSystemPrompt(prompt);
       await saveSetting("outputLanguage", language);
       setOutputLanguage(language);
@@ -83,10 +84,6 @@ export default function App() {
     setAutoRebuild(next);
     await saveSetting("autoRebuild", next);
   }, []);
-  const changeInterval = useCallback(async (next: number) => {
-    setIntervalHours(next);
-    await saveSetting("rebuildIntervalHours", next);
-  }, []);
 
   if (loading) return <div style={{ padding: 20, textAlign: "center" }}>Loading…</div>;
   if (!hasApiConfiguration(apiSettings)) return <ApiKeySetup initialSettings={apiSettings} onSave={saveConnection} />;
@@ -98,8 +95,7 @@ export default function App() {
       apiSettings={apiSettings}
       autoRebuild={autoRebuild}
       onToggleAutoRebuild={toggleAutoRebuild}
-      intervalHours={intervalHours}
-      onChangeInterval={changeInterval}
+      blockedSites={blockedSites}
       onClose={() => setShowSettings(false)}
       onSave={savePrompt}
     />

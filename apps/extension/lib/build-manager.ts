@@ -6,7 +6,7 @@ import {
   type ApiConfiguration,
   type RunPhase,
 } from "@homepage/agent-core";
-import { rebuildIntervalMs, shouldAutoRebuild } from "./auto-rebuild";
+import { shouldAutoRebuild } from "./auto-rebuild";
 import { browserBridge } from "./browser-bridge";
 import {
   INITIAL_BUILD_STATE,
@@ -126,7 +126,6 @@ export class BuildManager {
         isRunning: this.running,
         lastBuildTimestamp: homepage?.timestamp,
         lastAutoAttemptTimestamp: lastAttempt,
-        intervalMs: rebuildIntervalMs(settings.rebuildIntervalHours),
         now,
       })
     ) {
@@ -134,7 +133,7 @@ export class BuildManager {
     }
 
     // Stamp the attempt before starting so a second wake (or a cancel/failure)
-    // doesn't re-trigger it within the interval.
+    // doesn't re-trigger it this morning.
     await extensionStore.set(KEYS.lastAutoBuildAttempt, now.toISOString());
     void this.startBuild({ resume: false });
   }
@@ -176,6 +175,7 @@ export class BuildManager {
         store: extensionStore,
         userSystemPrompt: settings.systemPrompt,
         outputLanguage: settings.outputLanguage,
+        blockedSites: async () => (await loadSettings()).blockedSites,
         resumeSessionId,
         signal: this.controller.signal,
         callbacks: {

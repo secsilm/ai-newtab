@@ -3,6 +3,7 @@ import { apiFailure, parseResponsesMessage, responsesInput, type CompatibleMessa
 import { buildHistoryDigest, slugifyUrl } from "./history-digest";
 import { HOMEPAGE_SYSTEM_PROMPT, OUTPUT_PATH, buildKickoffMessage } from "./prompt";
 import type { OutputLanguage } from "./output-language";
+import { DEFAULT_BLOCKED_SITES, isAllowedUrl, isBlocked, isPrivateAddress, normalizeBlockList } from "./site-filter";
 import { DEFAULTS, GET_HISTORY_SCHEMA, GET_PAGE_HTML_SCHEMA, type ToolInputSchema } from "./schemas";
 import { STORAGE_KEYS } from "./setup";
 import type { BrowserBridge, HomepageBuildResult, KVStore, RunCallbacks } from "./types";
@@ -56,6 +57,8 @@ export interface OpenAIRunOptions {
   store: KVStore;
   userSystemPrompt?: string;
   outputLanguage?: OutputLanguage;
+  /** Re-read before each tool call, including resumed calls. */
+  blockedSites?: string[] | (() => Promise<string[]>);
   callbacks?: RunCallbacks;
   signal?: AbortSignal;
   resumeSessionId?: string;
@@ -216,29 +219,42 @@ function readFile(state: Checkpoint, path: string): string {
 
 async function dispatch(name: string, args: Record<string, unknown>, state: Checkpoint, opts: OpenAIRunOptions): Promise<unknown> {
   const phase = opts.callbacks?.onPhase;
+  const blockedSites = normalizeBlockList(
+    (typeof opts.blockedSites === "function" ? await opts.blockedSites() : opts.blockedSites) ?? DEFAULT_BLOCKED_SITES,
+  );
   switch (name) {
     case "getHistory": {
       const daysToAnalyze = integer(args, "daysToAnalyze", DEFAULTS.daysToAnalyze, 1, 90);
       const maxResults = integer(args, "maxResults", DEFAULTS.maxResults, 1, 50);
       phase?.("history", `${daysToAnalyze}d`);
       const { sites, totalSitesSeen } = await opts.bridge.getHistory({ daysToAnalyze, maxResults });
-      return buildHistoryDigest(sites, { daysToAnalyze, maxResults, totalSitesSeen });
+      const allowed = sites.filter((site) => !isBlocked(site.domain, blockedSites));
+      return buildHistoryDigest(allowed, {
+        daysToAnalyze, maxResults, totalSitesSeen: totalSitesSeen - (sites.length - allowed.length),
+      });
     }
     case "getPageHtml": {
       const urls = args.urls;
       if (!Array.isArray(urls) || !urls.length || urls.length > 8 || urls.some((u) => typeof u !== "string")) throw new Error("urls must contain 1 to 8 HTTP(S) URLs.");
-      for (const url of urls) {
-        if (!["http:", "https:"].includes(new URL(url).protocol)) throw new Error("Only HTTP(S) pages can be scraped.");
-      }
-      const nextUrls = [...new Set([...state.scrapedUrls, ...urls])];
+      const allowed = urls.filter((url) => isAllowedUrl(url, blockedSites));
+      const nextUrls = [...new Set([...state.scrapedUrls, ...allowed])];
       if (nextUrls.length > 8) throw new Error("At most 8 distinct pages may be scraped per build.");
       const loadDelayMs = integer(args, "loadDelayMs", DEFAULTS.loadDelayMs, 0, 30_000);
       phase?.("scraping", `${urls.length} pages`);
-      const result = await opts.bridge.getPageHtml({ urls, loadDelayMs });
+      const result = allowed.length
+        ? await opts.bridge.getPageHtml({ urls: allowed, loadDelayMs })
+        : { pages: [], failed: [] };
       state.scrapedUrls = nextUrls;
-      const failed = [...result.failed];
+      const failed = [
+        ...urls.filter((url) => !isAllowedUrl(url, blockedSites)).map((url) => ({ url, reason: "blocked by the user's settings" })),
+        ...result.failed,
+      ];
       const pages = [];
       for (const page of result.pages) {
+        if ((page.finalUrl && !isAllowedUrl(page.finalUrl, blockedSites)) || (page.ip && isPrivateAddress(page.ip))) {
+          failed.push({ url: page.url, reason: "blocked by the user's settings" });
+          continue;
+        }
         const fileSize = Object.values(state.files).reduce((n, text) => n + text.length, 0);
         if (fileSize + page.html.length > MAX_FILE_CHARS) {
           failed.push({ url: page.url, reason: "Page exceeds the local file size limit." });

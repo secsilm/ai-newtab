@@ -1,5 +1,6 @@
 import {
   DEFAULT_MODEL,
+  DEFAULT_BLOCKED_SITES,
   MODEL_CHOICES,
   STORAGE_KEYS as AGENT_KEYS,
   type KVStore,
@@ -21,6 +22,7 @@ export const KEYS = {
   homepage: "homepageData",
   systemPrompt: "systemPrompt",
   outputLanguage: "outputLanguage",
+  blockedSites: "blockedSites",
   model: "model",
   provider: "apiProvider",
   openaiApiKey: "openaiApiKey",
@@ -32,7 +34,6 @@ export const KEYS = {
   autoRebuild: "autoRebuild",
   /** ISO timestamp of the last auto-build *attempted* (success or not). */
   lastAutoBuildAttempt: "lastAutoBuildAttempt",
-  rebuildIntervalHours: "autoRebuildIntervalHours",
   /** Throttled mirror of the live build state, for tabs that open while the worker sleeps. */
   buildSnapshot: "buildSnapshot",
 } as const;
@@ -47,9 +48,9 @@ export interface Homepage {
 export interface Settings extends ApiSettings {
   systemPrompt: string;
   outputLanguage: OutputLanguage;
+  blockedSites: string[];
   /** Unset means on — auto-rebuild is opt-out. */
   autoRebuild: boolean;
-  rebuildIntervalHours: number | null;
 }
 
 /** The `KVStore` agent-core persists its agent/environment/session IDs through. */
@@ -71,6 +72,7 @@ export async function loadSettings(): Promise<Settings> {
     KEYS.apiKey,
     KEYS.systemPrompt,
     KEYS.outputLanguage,
+    KEYS.blockedSites,
     KEYS.model,
     KEYS.provider,
     KEYS.openaiApiKey,
@@ -78,7 +80,6 @@ export async function loadSettings(): Promise<Settings> {
     KEYS.openaiModel,
     KEYS.openaiApiFormat,
     KEYS.autoRebuild,
-    KEYS.rebuildIntervalHours,
   ]);
   const model = s[KEYS.model] as string | undefined;
   return {
@@ -87,6 +88,7 @@ export async function loadSettings(): Promise<Settings> {
     apiKey: (s[KEYS.apiKey] as string | undefined) ?? null,
     systemPrompt: (s[KEYS.systemPrompt] as string | undefined) ?? "",
     outputLanguage: normalizeOutputLanguage(s[KEYS.outputLanguage]),
+    blockedSites: (s[KEYS.blockedSites] as string[] | undefined) ?? [...DEFAULT_BLOCKED_SITES],
     // Fall back if a stored model is no longer offered.
     model: MODEL_CHOICES.find((m) => m.id === model)?.id ?? DEFAULT_MODEL,
     openaiApiKey: (s[KEYS.openaiApiKey] as string | undefined) ?? null,
@@ -94,7 +96,6 @@ export async function loadSettings(): Promise<Settings> {
     openaiModel: (s[KEYS.openaiModel] as string | undefined) ?? "",
     openaiApiFormat: s[KEYS.openaiApiFormat] === "responses" ? "responses" : s[KEYS.openaiApiFormat] === "chat-completions" ? "chat-completions" : "auto",
     autoRebuild: s[KEYS.autoRebuild] !== false,
-    rebuildIntervalHours: (s[KEYS.rebuildIntervalHours] as number | undefined) ?? null,
   };
 }
 
@@ -112,7 +113,7 @@ export async function saveApiSettings(settings: ApiSettings): Promise<void> {
   });
 }
 
-export async function saveSetting<K extends "apiKey" | "systemPrompt" | "outputLanguage" | "model" | "autoRebuild" | "rebuildIntervalHours">(
+export async function saveSetting<K extends "apiKey" | "systemPrompt" | "outputLanguage" | "blockedSites" | "model" | "autoRebuild">(
   key: K,
   value: Settings[K],
 ): Promise<void> {
