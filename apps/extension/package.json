@@ -2,7 +2,7 @@
   "name": "@homepage/extension",
   "description": "MV3 browser extension that builds a personalized new-tab homepage from your browsing history.",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "wxt",
